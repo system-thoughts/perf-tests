@@ -69,7 +69,7 @@ jobs:
           docker buildx build --platform linux/amd64 --load \
             -t localhost/proxy-bench:ci-smoke -f tools/proxy-bench/Dockerfile .
           docker run --rm --entrypoint /bin/sh localhost/proxy-bench:ci-smoke -c \
-            'test ! -e /home/k6/fixed-pool/tests && proxy-bench-worker-support --help >/dev/null && k6 version'
+            'test ! -e /home/k6/fixed-pool/tests && proxy-bench-worker-support prepare-input --help >/dev/null && k6 version'
           docker buildx build --platform linux/amd64 --load \
             -t localhost/proxy-bench-tools:ci-smoke -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
           docker run --rm --entrypoint /bin/sh localhost/proxy-bench-tools:ci-smoke -c \

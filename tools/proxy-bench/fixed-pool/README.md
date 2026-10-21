@@ -64,6 +64,32 @@ prove that the load generators have sufficient resources. File budgeting checks
 the estimate before generation and the total
 actual file lengths before publication. See the formulas and limits below.
 
+## Download a CI build
+
+The **Fixed-pool regression** workflow runs for relevant branch pushes and pull
+requests. After the tests pass, it uploads `fixed-pool-<commit SHA>` under the
+workflow run's **Artifacts** section. A failed build does not upload a distribution;
+regression diagnostics are retained separately. Artifacts expire after 14 days.
+
+Download and unzip that artifact, then verify its contents:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+The distribution contains Linux amd64/arm64 tool archives, `proxy-bench.oci.tar`
+(the load-generator image), `proxy-bench-tools.oci.tar` (preparation commands),
+source, build metadata and the license. Choose the tool archive for your machine;
+tar preserves executable permissions. OCI archives contain both architectures and
+must be imported or published through your container runtime before use. They are
+not registry URLs. The FileServer image remains a separate deployment input.
+
+`build-info.json` identifies the source commit, workflow run, Go toolchain and k6
+base image. The two image metadata files contain image digests. Source archives
+include maintainer tests; neither runtime nor preparation images contain them.
+These are build artifacts, not an automatic GitHub Release, registry publication
+or deployment. Cross-building an ARM image does not establish ARM native results.
+
 ## Create a dataset
 
 Use decimal positive byte sizes and counts, an empty source directory, and a real

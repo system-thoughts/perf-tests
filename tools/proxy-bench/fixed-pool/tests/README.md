@@ -24,7 +24,9 @@ During development, the affected suite gives feedback; the full run is the
 functional regression gate. The [workflow](../../../../.github/workflows/fixed-pool.yaml)
 runs Go race tests, platform builds and both suites for relevant main-branch pushes
 and pull requests, and supports manual dispatch. It preserves regression artifacts
-on failure. A workflow definition is not evidence that a particular revision passed
+on failure. Successful runs also upload tested tool/OCI distributions; see the
+[download instructions](../README.md#download-a-ci-build). A workflow definition
+is not evidence that a particular revision passed
 GitHub Actions; record its actual run separately.
 They complement Go unit tests and applicable real Seed, Kubernetes and scale tests.
 Benchmark users do not need to run them before every measurement.

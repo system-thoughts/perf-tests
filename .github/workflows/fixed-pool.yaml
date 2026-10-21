@@ -2,7 +2,6 @@ name: Fixed-pool regression
 
 on:
   push:
-    branches: [main]
     paths:
       - 'tools/proxy-bench/**'
       - 'Makefile'
@@ -25,7 +24,7 @@ permissions:
 jobs:
   regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -48,6 +47,55 @@ jobs:
         run: |
           export PATH="$PWD/bin/proxy-bench-tools/amd64:$RUNNER_TEMP:$PATH"
           make test-proxy-bench-fixed-pool WORK_DIR="$RUNNER_TEMP/fixed-pool-regression"
+      - name: Build distribution archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist_dir="$RUNNER_TEMP/fixed-pool-delivery"
+          mkdir "$dist_dir"
+          for arch in amd64 arm64; do
+            tar -czf "$dist_dir/proxy-bench-tools-linux-$arch.tar.gz" -C "bin/proxy-bench-tools/$arch" .
+          done
+          git archive --format=tar.gz --prefix=perf-tests/ --output="$dist_dir/source.tar.gz" HEAD
+          docker buildx create --driver docker-container --use
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --output "type=oci,dest=$dist_dir/proxy-bench.oci.tar" \
+            --metadata-file "$dist_dir/proxy-bench-image.json" \
+            -t "localhost/proxy-bench:sha-$GITHUB_SHA" -f tools/proxy-bench/Dockerfile .
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --output "type=oci,dest=$dist_dir/proxy-bench-tools.oci.tar" \
+            --metadata-file "$dist_dir/proxy-bench-tools-image.json" \
+            -t "localhost/proxy-bench-tools:sha-$GITHUB_SHA" -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+          docker buildx build --platform linux/amd64 --load \
+            -t localhost/proxy-bench:ci-smoke -f tools/proxy-bench/Dockerfile .
+          docker run --rm --entrypoint /bin/sh localhost/proxy-bench:ci-smoke -c \
+            'test ! -e /home/k6/fixed-pool/tests && proxy-bench-worker-support --help >/dev/null && k6 version'
+          docker buildx build --platform linux/amd64 --load \
+            -t localhost/proxy-bench-tools:ci-smoke -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+          docker run --rm --entrypoint /bin/sh localhost/proxy-bench-tools:ci-smoke -c \
+            'proxy-bench-data-prepare --help >/dev/null && proxy-bench-plan-prepare --help >/dev/null && proxy-bench-seed-cache-prepare --help >/dev/null'
+          cp LICENSE "$dist_dir/LICENSE"
+          python3 - <<'PYINFO'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'fixed-pool-delivery'
+          image = next(line.split()[1] for line in pathlib.Path('tools/proxy-bench/Dockerfile').read_text().splitlines()
+                       if line.upper().startswith('FROM '))
+          info = {'commit': os.environ['GITHUB_SHA'], 'repository': os.environ['GITHUB_REPOSITORY'],
+                  'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                  'go_version': subprocess.check_output(['go', 'version'], text=True).strip(),
+                  'k6_image': image, 'platforms': ['linux/amd64', 'linux/arm64']}
+          (root / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+          PYINFO
+          cd "$dist_dir"
+          sha256sum ./*.tar.gz ./*.tar ./*.json LICENSE > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Upload tested distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fixed-pool-${{ github.sha }}
+          path: ${{ runner.temp }}/fixed-pool-delivery
+          if-no-files-found: error
+          retention-days: 14
       - name: Preserve regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

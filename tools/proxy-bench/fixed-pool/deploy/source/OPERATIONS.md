@@ -115,15 +115,41 @@ logs and residual files. Deleting a failed Job does not empty its dataset.
 
 ```sh
 kubectl apply -f "$RENDERED/dataset-job.yaml"
-if ! kubectl wait -n "$NAMESPACE" --for=condition=complete \
-    "job/${SOURCE_NAME}-data" --timeout=30m; then
+if ! python3 - "$NAMESPACE" "$SOURCE_NAME" <<'PY'
+import json, subprocess, sys, time
+namespace, source = sys.argv[1:]
+job = source + '-data'
+deadline = time.monotonic() + 1800
+while time.monotonic() < deadline:
+    result = subprocess.run(['kubectl', '-n', namespace, 'get', 'job', job, '-o', 'json'],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise SystemExit(result.stderr)
+    status = json.loads(result.stdout).get('status', {})
+    failed = [c for c in status.get('conditions', [])
+              if c['type'] in ('Failed', 'FailureTarget') and c['status'] == 'True']
+    if status.get('failed', 0) or failed:
+        raise SystemExit(f'Generation Job {namespace}/{job} failed: {failed}; inspect Pod logs/events')
+    if status.get('succeeded', 0) == 1:
+        print(f'Generation Job {namespace}/{job} succeeded')
+        break
+    time.sleep(2)
+else:
+    raise SystemExit(f'Generation Job {namespace}/{job} timed out; inspect Pod scheduling/events')
+PY
+then
   kubectl get job,pods -n "$NAMESPACE" -o wide
+  kubectl describe job -n "$NAMESPACE" "${SOURCE_NAME}-data" > "$RENDERED/failed-job.txt" 2>&1 || true
   kubectl logs -n "$NAMESPACE" "job/${SOURCE_NAME}-data" > "$RENDERED/failed-generation.log" 2>&1 || true
   exit 1
 fi
 ```
 
-Save Job/Pod facts and require one successful generation Pod with container exit
+The wait observes failure as well as success: with backoffLimit=0 it stops when
+the first failed Pod is reported, rather than waiting 30 minutes for Complete.
+An unschedulable or image-pull-blocked Pod can still reach the deadline; use Pod
+events to locate those infrastructure failures. Save Job/Pod facts and require
+one successful generation Pod with container exit
 0. More than one actual Pod requires inspection, not selection of a "latest"
 result. Read the log from that Pod and keep it unchanged.
 
@@ -184,8 +210,9 @@ protect the dataset; do not assume a Job ran exactly once or adopt residual data
 ## 5. Start the server and export the manifest
 
 The server reads the same dataset through the read-only mounts described in the
-overview. Save its actual Pod/imageID and verify the configured image's nginx root
-and port. Pod Ready alone does not establish that the source bytes are correct.
+overview. Save its actual Pod/imageID. The supplied FileServer must serve the
+documented root and port. Pod readiness is deployment status; the subsequent
+Seed preparation validates the objects it reads.
 
 ```sh
 kubectl apply -f "$RENDERED/file-server.yaml"
@@ -215,64 +242,24 @@ kubectl exec -n "$NAMESPACE" "$SERVER_POD" -- \
 printf '%s  %s\n' "$MANIFEST_ID" "$RENDERED/dataset-manifest.json" | sha256sum -c -
 ```
 
-## 6. Check the published HTTP source
+## 6. Continue with Seed preparation
 
-These checks are required before Seed preparation. Run them on a machine/network
-that can access the exact manifest URLs as the Seed will. If the operator terminal
-has different routing/DNS, copy the manifest unchanged and set RENDERED to that
-copy's directory on a suitable machine. Do not replace the URL with localhost.
-Provision the previously chosen external endpoint first, if applicable.
+Provision the previously selected external endpoint if applicable, then pass the
+exported manifest to [Seed preparation](../../README.md#prepare-a-target-seed-cache).
+There is no separate source-body download or manual HTTP verification step.
+The command validates full-pool lengths, digests and target completion, streams
+bodies without storing another copy, and records per-object errors.
 
-The first block selects the first object's URL and saves three responses: HEAD
-(headers only), full GET (the complete object), and a Range of at most 64 KiB.
-Accept-Encoding: identity avoids compressed bytes; --fail makes HTTP errors fail.
+For failures, inspect target-preparation.json and target-object-results.json:
 
-```sh
-OBJECT_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["objects"][0]["url"])' "$RENDERED/dataset-manifest.json")"
-curl --noproxy '*' --silent --show-error --fail --head --max-time 60 \
-  "$OBJECT_URL" > "$RENDERED/head.headers"
-curl --noproxy '*' --silent --show-error --fail --max-time 1800 \
-  -H 'Accept-Encoding: identity' -D "$RENDERED/full.headers" \
-  "$OBJECT_URL" -o "$RENDERED/object.bin"
-PROBE_BYTES="$(python3 -c 'import json,sys; print(min(65536,json.load(open(sys.argv[1]))["object_size_bytes"]))' "$RENDERED/dataset-manifest.json")"
-curl --noproxy '*' --silent --show-error --fail --max-time 60 \
-  -H 'Accept-Encoding: identity' -H "Range: bytes=0-$((PROBE_BYTES - 1))" \
-  -D "$RENDERED/range.headers" "$OBJECT_URL" -o "$RENDERED/range.bin"
-```
+| Failure | Where to look next |
+| --- | --- |
+| Proxy connection or request timeout | target.proxy, Seed process, Seed-to-origin DNS/routing and Seed logs. |
+| full_get HTTP status failure | Object URL, nginx/Seed logs, Service selectors and PVC mounts. |
+| full_get length or digest mismatch | Manifest entry, mounted dataset and received_bytes/SHA256. |
+| Wrong server IP, task identity or completion marker | Target configuration, actual Seed instance and its task state. |
 
-The independent check compares the saved response status/headers and bytes to the
-manifest: HEAD 200 and size; full length and SHA-256; Range 206, Content-Range,
-length and matching prefix. The sample object may require substantial local disk
-space at large B. This is a source check, not a whole-pool Seed readiness proof.
-
-```sh
-python3 - "$RENDERED" <<'PY'
-import email.parser, hashlib, json, pathlib, sys
-r = pathlib.Path(sys.argv[1])
-o = json.loads((r/'dataset-manifest.json').read_bytes())['objects'][0]
-size = min(65536, o['size_bytes'])
-def headers(name, status):
-    lines = (r/name).read_text().splitlines()
-    assert int(lines[0].split()[1]) == status
-    h = email.parser.Parser().parsestr('\n'.join(lines[1:]))
-    assert h.get('Content-Encoding') in [None, 'identity']
-    return h
-assert int(headers('head.headers', 200)['Content-Length']) == o['size_bytes']
-headers('full.headers', 200)
-body = (r/'object.bin').read_bytes()
-assert len(body) == o['size_bytes'] and hashlib.sha256(body).hexdigest() == o['sha256']
-h = headers('range.headers', 206)
-assert h['Content-Range'] == f'bytes 0-{size-1}/{o["size_bytes"]}'
-assert int(h['Content-Length']) == size
-assert (r/'range.bin').read_bytes() == body[:size]
-print('Representative source HEAD/full GET/Range checks passed')
-PY
-```
-
-Success prints Representative source HEAD/full GET/Range checks passed. Preserve
-the headers/body evidence as needed and hand the exact exported manifest to plan
-or Seed preparation. Those commands perform their own input/target checks.
-
-For source failures, restore the original URL/mount/service and repeat the source
-checks without rerunning successful generation. Keep the configuration, resources,
-Pod/image facts, logs, manifest and check evidence with this dataset.
+An error reports the observed boundary, not a root cause inferred from an HTTP
+status. Preserve failed output and retry into a new preparation directory after
+repair. Source repair does not rerun successful generation. Keep configuration,
+resources, Pod/image facts, generation logs and manifest with the dataset.

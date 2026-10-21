@@ -29,13 +29,15 @@ import (
 )
 
 type NativeSummary struct {
-	SchemaVersion int            `json:"schema_version"`
-	RunID         string         `json:"run_id"`
-	WorkerID      uint64         `json:"worker_id"`
-	ManifestID    string         `json:"manifest_id"`
-	PlanID        string         `json:"plan_id"`
-	K6Version     string         `json:"k6_version"`
-	Native        map[string]any `json:"native_summary"`
+	SchemaVersion int    `json:"schema_version"`
+	RunID         string `json:"run_id"`
+	WorkerID      uint64 `json:"worker_id"`
+	ManifestID    string `json:"manifest_id"`
+	PlanID        string `json:"plan_id"`
+	// Accepted for older summaries only; engine metadata never controls results.
+	K6Version        any            `json:"k6_version,omitempty"`
+	Native           map[string]any `json:"native_summary"`
+	EffectiveOptions map[string]any `json:"effective_options,omitempty"`
 }
 type Coverage struct {
 	UniqueRegions uint64  `json:"unique_regions"`
@@ -115,7 +117,8 @@ func droppedCount(n NativeSummary, issues []worker.Issue) *float64 {
 	if value != nil || present {
 		return value
 	}
-	// The locked engine omits the whole metric for zero dropped iterations.
+	// k6 omits the whole metric when no dropped-iteration samples were emitted.
+	// Regressions check this behavior against the engine shipped by the image.
 	// Missing local execution facts do not invalidate otherwise complete native
 	// metrics; missing native fields must never be silently converted to zero.
 	for _, issue := range issues {
@@ -125,6 +128,20 @@ func droppedCount(n NativeSummary, issues []worker.Issue) *float64 {
 	}
 	zero := float64(0)
 	return &zero
+}
+
+// Native configuration can replace scenarios or partition their iteration IDs.
+// These observations qualify coverage; they never reject engine configuration.
+func continuousScenario(n *NativeSummary) bool {
+	if n == nil || n.EffectiveOptions == nil {
+		// Legacy summaries predate the effective-options snapshot.
+		return true
+	}
+	if n.EffectiveOptions["executionSegment"] != nil {
+		return false
+	}
+	scenarios, ok := n.EffectiveOptions["scenarios"].(map[string]any)
+	return ok && len(scenarios) == 1
 }
 
 // Derive maps native values without recomputing rates or combining distributions.
@@ -167,7 +184,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			}
 		}
 	}
-	if n != nil && (n.SchemaVersion != 1 || n.RunID != spec.RunID || n.WorkerID != spec.WorkerID || n.ManifestID != spec.ManifestID || n.PlanID != spec.PlanID || n.K6Version != worker.K6Version || n.Native == nil) {
+	if n != nil && (n.SchemaVersion != 1 || n.RunID != spec.RunID || n.WorkerID != spec.WorkerID || n.ManifestID != spec.ManifestID || n.PlanID != spec.PlanID || n.Native == nil) {
 		n = nil
 	}
 	if n == nil {
@@ -240,7 +257,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			addIssue(&r, spec, "WORKER_FAILED", "execution", "normal exit has inconsistent consumed/iterations/http_reqs counters")
 		}
 	}
-	if r.ExecutionState == worker.Completed && countsValid && r.ResultComplete {
+	if r.ExecutionState == worker.Completed && countsValid && r.ResultComplete && continuousScenario(n) {
 		unique := min(uint64(*w.PlanConsumed.Count), spec.RegionCount)
 		if spec.RangeBytes == 0 || unique > contract.MaxSafeInteger/spec.RangeBytes {
 			addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "logical byte coverage exceeds the exact integer contract")
@@ -248,7 +265,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			w.Coverage = &Coverage{UniqueRegions: unique, LogicalBytes: unique * spec.RangeBytes, Ratio: float64(unique) / float64(spec.RegionCount)}
 		}
 	} else {
-		addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "a complete normal execution with consistent consumption is required to establish a continuous prefix")
+		addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "coverage requires normal completion, consistent consumption and one unsegmented scenario")
 	}
 	r.Workers = append(r.Workers, w)
 	if run.WorkerCount == 1 {

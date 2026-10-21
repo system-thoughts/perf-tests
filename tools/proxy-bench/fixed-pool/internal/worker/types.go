@@ -29,7 +29,6 @@ const (
 	Unknown     = "unknown"
 )
 
-const K6Version = "2.3.0"
 const Prefix = "PROXY_BENCH_FIXED_POOL_"
 
 type Issue struct {

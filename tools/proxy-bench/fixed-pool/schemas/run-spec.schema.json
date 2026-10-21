@@ -106,17 +106,13 @@
         "instance_ref": {
           "type": "string",
           "minLength": 1
-        },
-        "client_version": {
-          "const": "v1.5.7"
         }
       },
       "required": [
         "ref",
         "proxy",
         "expected_server_ip",
-        "instance_ref",
-        "client_version"
+        "instance_ref"
       ]
     },
     "total_rate": {
@@ -131,7 +127,7 @@
     },
     "duration_ms": {
       "type": "integer",
-      "minimum": 1,
+      "minimum": 1000,
       "maximum": 9007199254740991
     },
     "timeout_ms": {

@@ -68,8 +68,11 @@ actual file lengths before publication. See the formulas and limits below.
 
 Use decimal positive byte sizes and counts, an empty source directory, and a real
 HTTP source address when serving the objects. This example generates URLs without
-connecting to them. Credentials, queries, fragments, localhost, and loopback IPs
-are rejected.
+connecting to them. Credentials, queries, and fragments
+are rejected. The source must be reachable from the Seed network. Local URLs
+are accepted for data preparation; native k6 proxy routing bypasses literal
+localhost/loopback destinations, so use a proxyable source hostname for Seed
+measurements. Clearing NO_PROXY does not change that native exception.
 
 ```bash
 ./bin/proxy-bench-data-prepare \
@@ -111,7 +114,7 @@ The Kubernetes source bundle supplies a shared configuration,
 data-generation Job, FileServer/Service templates, an optional PVC example, and
 step-by-step rendering and recovery instructions. Use [the source bundle](deploy/source/README.md) for configuration, whitelisted
 rendering, sequential Job/server deployment, log extraction, manifest export,
-and HTTP checks. The following layout is also the standalone data command
+and failure diagnosis. The following layout is also the standalone data command
 integration contract.
 
 Use a dedicated business directory inside the source PVC:
@@ -145,13 +148,14 @@ Before target cache preparation:
    generation, and do not use a generation initContainer on the server.
 3. After successful generation and release of its volume mount, start a separate
    FileServer and Service on the same PVC. Follow the PVC access mode and storage
-   topology; RWX is not required, and RWO does not mean only one Pod. Confirm the
-   pinned image's nginx root and listening port before setting Service targetPort.
-4. Retrieve the manifest identified by the generation result as described below.
-   From the Seed's network, check a representative manifest URL: full GET length
-   and SHA-256, HEAD metadata, and Range status 206, Content-Range, length, and
-   bytes. Pod readiness alone is insufficient. Sampling does not verify the
-   whole pool; separate Seed preparation performs full-pool validation.
+   topology; RWX is not required, and RWO does not mean only one Pod. Use the
+   documented FileServer profile: nginx root /usr/share/nginx/html and port 80.
+   The supplied templates keep that mapping fixed.
+4. Retrieve the manifest identified by the generation result as described below,
+   verifying its raw digest. Provision the selected endpoint and proceed directly
+   to Seed preparation, which validates all objects through the selected Seed.
+   No separate source verification or saved body copy is required. Maintainers
+   cover source GET/HEAD/Range behavior and deployment faults in source regressions.
 
 The service container mounts only the objects under the HTTP root and also
 mounts the dataset outside that root for manifest retrieval:
@@ -236,7 +240,10 @@ Plans reside in `PLAN_DIR/INPUT_KEY/` with `request-plan.json`, `object-urls.jso
 and `shards/WORKER_ID.json`. The input key hashes the manifest's actual byte
 digest, R, W, fixed algorithm, and seed. `plan.sha256` hashes the actual plan file
 and is distinct from that lookup key. Repeating identical inputs reuses the plan
-only after validating every reference, checksum, count, and fixed shard order.
+after checking references, checksums, counts and region bounds. Canonical order,
+coverage and uniqueness are checked once before a new plan is published.
+Consumers trust published artifacts; coordinated edits to data and their hashes
+are outside the integrity check. Keep published plans immutable.
 A changed manifest at the same path is a new input; moving identical bytes does
 not change identity. Corrupt or missing existing artifacts are rejected without
 overwriting or automatically repairing them.
@@ -261,6 +268,15 @@ URL index, and shard lengths are checked before publication. Without budgets,
 estimates and free-space checks still run. These estimates do not guarantee peak
 Go/k6 memory. Production pool sizes and loading costs require calibration.
 M is limited to `2^32-1`; JS-facing integers are limited to `2^53-1`.
+
+The producer holds the O(M) permutation and validates the complete published
+shard set before publication. Worker startup reads common metadata and only its
+own shard, checking references, checksums, worker ID, count and integer bounds;
+it never reconstructs the global permutation or allocates a global uniqueness
+bitmap. Metadata uses O(N+W) space and shard validation streams O(Mw) entries.
+k6 SharedArray loads O(Mw+N) entries. Reuse checks all shard files for integrity
+but does not regenerate the permutation. Measure helper and k6 resource costs
+separately; generation budgets do not establish sufficient worker resources.
 
 Errors contain `code`, `stage`, and `message`. Exit status is 0 for completed
 preparation, 2 for invalid input, contract mismatch, budget excess or data
@@ -290,9 +306,14 @@ preparation performs full target-body verification.
 
 ## Prepare a target Seed cache
 
-After publishing and checking the source, copy
+After publishing the source, copy
 [the target configuration](examples/target-config.yaml), fill the actual proxy,
-expected server IP, observed instance reference and Client version `v1.5.7`.
+expected server IP and observed instance reference. No Client version is
+requested or used for admission. Preparation checks actual response identity,
+body and completion evidence; record software versions separately in experiment
+notes when comparing results. Earlier candidate configurations containing
+`client_version` must drop that input and generate a new preparation record in
+a new directory. Keep historical ready records unchanged.
 Record the **effective** proxy rules in `proxy-rules.json`, including the actual
 filtered query parameter list, `rewrite_url=false`, and `use_tls=false`. Hash its
 original bytes and place that digest in `proxy_rules_ref.sha256`. A relative
@@ -341,6 +362,12 @@ structured input errors); archive it separately. Status is `ready`, `failed`
 successful full pool can be ready. Exit codes remain 0/2/3/130; unsupported or
 unverified targets exit 3. Preserve failed evidence, then fix and retry rather
 than overwriting it.
+
+The worker consumes a ready preparation summary by checking dataset/target/identity
+bindings, status, object count and evidence-file digest. It streams that digest;
+it does not parse every saved object result or repeat body verification. Keep the
+summary and referenced evidence unchanged. Full body and completion checks belong
+to `proxy-bench-seed-cache-prepare`; regressions protect that producer behavior.
 
 These records prove the preparation-end condition only. Operators must verify
 the actual automatic piece length and Range alignment on first integration or
@@ -392,12 +419,23 @@ volume's node. The input PVC must contain this metadata layout:
 ```
 
 Copy the entire prepared plan directory into `plan/` and the preparation's two
-JSON files together. Preserve the target configuration's rules reference. Edit
-the Job's image, PVC name, proxy, total RATE, DURATION and RUN_ID, then submit it:
+JSON files together. Preserve the target configuration's rules reference.
+From the repository root, copy the Job template to a separate file for this run:
 
 ```bash
-kubectl apply -f proxy-bench-fixed-pool.yaml
-kubectl get pods -l job-name=proxy-bench-fixed-pool-run-001
+JOB_YAML="$(mktemp "$HOME/proxy-bench-fixed-pool.XXXXXX.yaml")"
+cp tools/proxy-bench/fixed-pool/proxy-bench-fixed-pool.yaml "$JOB_YAML"
+```
+
+Edit the copy's image, PVC name, proxy, total RATE, DURATION and RUN_ID. The
+commands below retain the template's Job name; if you change it, set JOB_NAME to
+that actual name before submitting. Set NAMESPACE to the input PVC's namespace:
+
+```bash
+JOB_NAME=proxy-bench-fixed-pool-run-001
+: "${NAMESPACE:?set the input PVC namespace}"
+kubectl -n "$NAMESPACE" apply -f "$JOB_YAML"
+kubectl -n "$NAMESPACE" get pods -l "job-name=$JOB_NAME"
 ```
 
 Wait for the container to start or finish before collecting its logs. A short Job
@@ -405,8 +443,8 @@ may already be Completed; it need not become Ready again. For Pending,
 ContainerCreating or ImagePullBackOff, inspect Pod events first. Then collect:
 
 ```bash
-kubectl logs -f job/proxy-bench-fixed-pool-run-001 > worker-0.log
-kubectl get job proxy-bench-fixed-pool-run-001
+kubectl -n "$NAMESPACE" logs -f "job/$JOB_NAME" > worker-0.log
+kubectl -n "$NAMESPACE" get job "$JOB_NAME"
 ```
 
 The Job checks the saved input relationships before running k6. It does not
@@ -439,12 +477,35 @@ observed at the proxy can differ. The controlled regression includes this case.
 | PRE_ALLOCATED_VUS, MAX_VUS | 64, 512 | Existing proxy-bench starting points; max must cover preallocation |
 | RESULT_DIR | /results | Writable, initially empty; existing results are never overwritten |
 
-Durations must be positive and representable as whole milliseconds. An explicitly
+Durations must be positive and representable as whole milliseconds. DURATION must
+be at least 1s, as required by k6's constant-arrival-rate executor. An explicitly
 empty or malformed value is rejected. MODE/RANGE, legacy load knobs, extra
-identity overrides, unknown `PROXY_BENCH_*` variables and `K6_*` overrides are
-rejected (`K6_NO_USAGE_REPORT` is the only allowed k6 variable). Other operating
-system/service variables are not load parameters. The internal worker-support
-subcommands are called automatically; operators do not run them as an extra step.
+identity overrides and unknown `PROXY_BENCH_*` variables are rejected. Native
+`K6_*` options are accepted. No empty k6 configuration file is supplied.
+The entry clears environment proxy bypass variables. Native localhost/loopback
+exceptions still apply; choose a source hostname that routes through the Seed.
+The internal worker-support subcommands run automatically.
+
+k6 applies its native file, script, environment and CLI precedence. Testers own
+their local configuration and environment. `worker-spec.json` records benchmark
+script inputs, while `k6-summary.json.effective_options` captures k6's consolidated
+and derived test options once in handleSummary. Native null members are preserved;
+this snapshot is not a dump of all process settings. If the engine
+fails before handleSummary, no snapshot is available. External thresholds can
+make k6 exit nonzero; the worker preserves the engine failure and raw exit code.
+Multiple scenarios or an execution segment leave coverage unverified rather than
+being rejected. The original proxy-bench uses the same native configuration layers.
+
+The runtime image selects its k6 dependency in [Dockerfile](../Dockerfile).
+Version selection is a build and maintainer-regression concern. The shipped worker
+never calls `k6 version` and does not require, record or compare k6 versions when
+preparing inputs or deriving results. New summaries omit `k6_version`; older
+summaries may contain it, and the reader ignores that metadata. `tool_versions`
+retains helper/Go and script identifiers, without a required k6 entry.
+Required native metrics and fields are still checked for result completeness.
+Dependency upgrades must pass both controlled suites using the Dockerfile's engine;
+API or summary changes can require adaptation. Runtime success alone does not
+establish compatibility of an untested engine.
 
 ### Read the result
 
@@ -503,7 +564,7 @@ For execution triggers, prerequisites, scope and retained results, see
 changes or submitting a phase for acceptance. These are functional checks, not a
 capacity benchmark or a replacement for real Seed and Kubernetes validation.
 
-With the preparation binaries, worker-support and **k6 2.3.0** on PATH:
+With the preparation binaries, worker-support and the Dockerfile's k6 on PATH:
 
 ```bash
 python3 tools/proxy-bench/fixed-pool/tests/integration.py --work-dir /tmp/fixed-pool-regression-new

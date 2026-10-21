@@ -110,7 +110,7 @@
     },
     "duration_ms": {
       "type": "integer",
-      "minimum": 1,
+      "minimum": 1000,
       "maximum": 9007199254740991
     },
     "timeout_ms": {

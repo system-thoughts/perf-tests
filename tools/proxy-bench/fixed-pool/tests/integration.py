@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the shipped worker with k6 2.3.0 against a controlled HTTP proxy.
+"""Run the shipped worker with the image's k6 against a controlled HTTP proxy.
 
 Requires preparation binaries, worker-support and k6 on PATH. All inputs,
 results and logs are retained in a new --work-dir. This protocol fixture
@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -179,6 +180,26 @@ def invoke(args, directory):
     return json.loads(completed.stdout)
 
 
+def runtime_k6(root, scripts):
+    """Keep regressions on the image dependency without restricting the worker."""
+    dockerfile = scripts.parent / "Dockerfile"
+    base = re.search(r"(?im)^FROM\s+(?:--\S+\s+)*(\S+)", dockerfile.read_text())
+    assert base, f"missing k6 base image in {dockerfile}"
+    image = base.group(1)
+    dependency = image.split("@", 1)[0]
+    assert ":" in dependency.rsplit("/", 1)[-1], "pin the k6 image tag in Dockerfile"
+    expected = re.sub(r"^v", "", dependency.rsplit(":", 1)[1])
+    version = run_command(["k6", "version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    fields = version.stdout.split()
+    write(root / "runtime-k6.json", {"image": image, "argv": ["k6", "version"],
+                                    "exit_code": version.returncode, "stdout": version.stdout,
+                                    "stderr": version.stderr})
+    assert version.returncode == 0 and len(fields) >= 2 and fields[0] == "k6", version
+    actual = re.sub(r"^v", "", fields[1])
+    assert actual == expected, f"regressions require Dockerfile engine {image}; PATH has k6 {actual}"
+    return actual
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -188,6 +209,7 @@ def main():
     for name in ("k6", "proxy-bench-worker-support", "proxy-bench-data-prepare",
                  "proxy-bench-plan-prepare", "proxy-bench-seed-cache-prepare"):
         assert shutil.which(name), f"missing {name} on PATH"
+    k6_version = runtime_k6(root, scripts)
     data_log = root / "data-command"
     data_log.mkdir()
     data = invoke(["proxy-bench-data-prepare", "--size", "65536", "--count", "2",
@@ -198,7 +220,7 @@ def main():
         write(rules_path, {"schema_version": 1, "filtered_query_params": [], "rewrite_url": False, "use_tls": False})
         proxy_url = f"http://127.0.0.1:{server.server_port}"
         target = {"schema_version": 1, "target": {"ref": "controlled-proxy", "proxy": proxy_url,
-                  "expected_server_ip": "192.0.2.1", "instance_ref": "controlled-fixture-v1", "client_version": "v1.5.7"},
+                  "expected_server_ip": "192.0.2.1", "instance_ref": "controlled-fixture-v1"},
                   "proxy_rules_ref": {"path": "proxy-rules.json", "sha256": hashlib.sha256(rules_path.read_bytes()).hexdigest()}}
         config = root / "target-config.yaml"
         write(config, target)
@@ -214,7 +236,7 @@ def main():
         prepare_log.mkdir()
         invoke(["proxy-bench-seed-cache-prepare", "--manifest", str(manifest), "--target-config", str(config),
                 "--out", str(root / "target")], prepare_log)
-        base = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", str(root)),
+        base = {"PATH": os.environ["PATH"], "HOME": str(root), "XDG_CONFIG_HOME": str(root / "clean-config"),
                 "MANIFEST": str(manifest), "PLAN": str(plan_path), "TARGET_CONFIG": str(config),
                 "TARGET_PREPARATION": str(root / "target/target-preparation.json"), "HTTP_PROXY": proxy_url,
                 "RATE": "10", "DURATION": "1s", "TIMEOUT": "1s", "PRE_ALLOCATED_VUS": "2", "MAX_VUS": "4"}
@@ -257,6 +279,8 @@ def main():
             write(case / "requests.json", records)
             report = read(case / "results/worker-summary.json")
             native = read(case / "results/k6-summary.json")
+            run = read(case / "results/run-spec.json")
+            assert "k6_version" not in native and "k6" not in run["tool_versions"]
             execution = read(case / "results/worker-execution.json")
             write(case / "invocation.json", {"exit_code": code, "environment": env, "instrumented": instrument})
             metrics = report["workers"][0]["metrics"]
@@ -320,6 +344,28 @@ def main():
         assert code == 0 and report["execution_state"] == "completed" and report["coverage"]["ratio"] == 1
         assert 5 <= report["aggregate"]["TOOL_DURATION_S"] <= 6, "frozen 1s smoke tolerance exceeded"
         assert report["aggregate"]["SUCCESS_PCT"] == 100
+        # The suite has checked the Dockerfile engine. The product entry must
+        # run that engine without probing or comparing its version.
+        wrapper = root / "no-version-probe-bin"
+        wrapper.mkdir()
+        marker = root / "version-probe-called"
+        real_k6 = shutil.which("k6")
+        (wrapper / "k6").write_text(
+            '#!/bin/sh\nif [ "$1" = version ]; then\n'
+            f'  printf invoked > {shlex.quote(str(marker))}\n  exit 97\nfi\n'
+            f'exec {shlex.quote(real_k6)} "$@"\n')
+        (wrapper / "k6").chmod(0o700)
+        code, report, _, _ = run_case("no-version-probe", changes={"PATH": str(wrapper) + ":" + os.environ["PATH"]})
+        assert code == 0 and report["execution_state"] == "completed" and not marker.exists()
+        config_home = root / "config-home"
+        (config_home / "k6").mkdir(parents=True)
+        write(config_home / "k6/config.json", {"thresholds": {"http_req_failed": ["rate<0"]}})
+        code, report, native, _ = run_case("ambient-config", changes={"XDG_CONFIG_HOME": str(config_home)})
+        assert code == 3 and report["execution_state"] == "failed"
+        assert read(root / "ambient-config/results/worker-execution.json")["exit_code"] == 99
+        assert native["effective_options"]["thresholds"]["http_req_failed"] == ["rate<0"]
+        code, report, native, _ = run_case("native-env", changes={"K6_NO_CONNECTION_REUSE": "true"})
+        assert code == 0 and native["effective_options"]["noConnectionReuse"] is True
         code, report, _, records = run_case("transport-resend", "transport-resend",
                                             {"RATE": "2", "DURATION": "3s", "PRE_ALLOCATED_VUS": "1", "MAX_VUS": "1"}, instrument=True)
         assert code == 0 and report["execution_state"] == "completed" and report["aggregate"]["SUCCESS_PCT"] == 100
@@ -354,7 +400,7 @@ def main():
 
         rejected = []
         for name in ("nonready", "manifest", "identity", "target", "evidence", "record-alias", "plan-manifest",
-                     "shard-order", "object-urls", "proxy", "rate", "worker", "mode", "range"):
+                     "shard-bounds", "shard-hash", "object-urls", "proxy", "rate", "worker", "mode", "range", "duration"):
             case = root / ("reject-" + name)
             case.mkdir()
             env = {**base, "RUN_ID": "reject-" + name, "RESULT_DIR": str(case / "results")}
@@ -375,23 +421,28 @@ def main():
                     prepared["evidence_file"]["sha256"] = "0" * 64
                 write(case / "target-preparation.json", prepared)
                 env["TARGET_PREPARATION"] = str(case / "target-preparation.json")
-            elif name in ("plan-manifest", "shard-order", "object-urls"):
+            elif name in ("plan-manifest", "shard-bounds", "shard-hash", "object-urls"):
                 shutil.copytree(plan_path.parent, case / "plan")
                 changed = read(case / "plan/request-plan.json")
                 if name == "plan-manifest":
                     changed["manifest_sha256"] = "0" * 64
                 else:
-                    ref = changed["shards"][0] if name == "shard-order" else changed["objects_file"]
+                    ref = changed["shards"][0] if name in ("shard-bounds", "shard-hash") else changed["objects_file"]
                     filename = case / "plan" / ref["path"]
                     items = read(filename)
-                    items[0], items[1] = items[1], items[0]
+                    if name == "shard-bounds":
+                        items[0] = changed["region_count"]
+                    else:
+                        items[0], items[1] = items[1], items[0]
                     write(filename, items)
-                    ref["sha256"] = hashlib.sha256(filename.read_bytes()).hexdigest()
+                    if name != "shard-hash":
+                        ref["sha256"] = hashlib.sha256(filename.read_bytes()).hexdigest()
                 write(case / "plan/request-plan.json", changed)
                 env["PLAN"] = str(case / "plan/request-plan.json")
             else:
                 key, value = {"proxy": ("HTTP_PROXY", "http://other.test:4001"), "rate": ("RATE", "0"),
-                              "worker": ("WORKER_ID", "1"), "mode": ("MODE", "repeat"), "range": ("RANGE", "0-1")}[name]
+                              "worker": ("WORKER_ID", "1"), "mode": ("MODE", "repeat"), "range": ("RANGE", "0-1"),
+                              "duration": ("DURATION", "100ms")}[name]
                 env[key] = value
             before = len(server.records)
             completed = run_command(["/bin/sh", str(scripts / "run-benchmark.sh")], env=env,
@@ -451,7 +502,7 @@ def main():
             incomplete.append(mode)
         write(root / "incomplete-results.json", incomplete)
 
-        write(root / "result.json", {"k6_version": "2.3.0", "fixture_only": True, "cases": results})
+        write(root / "result.json", {"k6_version": k6_version, "fixture_only": True, "cases": results})
         print(json.dumps({"work_dir": str(root), "passed": len(results), "rejected_inputs": len(rejected),
                           "rejected_plan_inputs": len(rejected_plans), "incomplete_results": len(incomplete)}))
 

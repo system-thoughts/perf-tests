@@ -16,7 +16,7 @@ import signal
 import subprocess
 import time
 
-from integration import invoke, managed_process, read, replace_once, running_proxy, write
+from integration import invoke, managed_process, read, replace_once, running_proxy, runtime_k6, write
 
 
 @contextmanager
@@ -32,11 +32,11 @@ def prepare(root, address=("127.0.0.1", 0), public_host="127.0.0.1"):
         proxy = f"http://{public_host}:{server.server_port}"
         config = root / "target-config.yaml"
         write(config, {"schema_version": 1, "target": {"ref": "multi-worker-fixture", "proxy": proxy,
-                       "expected_server_ip": "192.0.2.1", "instance_ref": "controlled-v1", "client_version": "v1.5.7"},
+                       "expected_server_ip": "192.0.2.1", "instance_ref": "controlled-v1"},
                        "proxy_rules_ref": {"path": rules.name, "sha256": hashlib.sha256(rules.read_bytes()).hexdigest()}})
         invoke(["proxy-bench-seed-cache-prepare", "--manifest", data["manifest"]["path"],
                 "--target-config", str(config), "--out", str(root / "target")], root / "prepare-command")
-        yield server, {"PATH": os.environ["PATH"], "MANIFEST": data["manifest"]["path"],
+        yield server, {"PATH": os.environ["PATH"], "HOME": str(root), "XDG_CONFIG_HOME": str(root / "clean-config"), "MANIFEST": data["manifest"]["path"],
                        "TARGET_CONFIG": str(config), "TARGET_PREPARATION": str(root / "target/target-preparation.json"),
                        "HTTP_PROXY": proxy, "RATE": "17", "DURATION": "5s", "TIMEOUT": "2s",
                        "PRE_ALLOCATED_VUS": "4", "MAX_VUS": "8"}
@@ -136,6 +136,7 @@ def main():
     scripts = Path(__file__).resolve().parents[1]
     completed = []
     with prepare(root) as (server, base):
+        k6_version = runtime_k6(root, scripts)
         for name, workers in (("loops", 2), ("unequal-shards", 3), ("invalid-peer", 2),
                               ("interrupt-peer", 2), ("missing-summary", 2), ("dropped", 2), ("staggered", 2)):
             case = root / name
@@ -199,13 +200,19 @@ def main():
                                             name in ("loops", "unequal-shards")))
                 inspect_log = directory / "inspect-command"
                 inspect_log.mkdir()
-                options = invoke(["k6", "inspect", "--env", f"RESULT_DIR={directory / 'results'}",
+                options = invoke(["k6", "inspect",
+                                  "--env", f"RESULT_DIR={directory / 'results'}",
                                   str(directory / "scripts/benchmark.js")], inspect_log)
                 executor = options["scenarios"]["fixed_pool"]
                 expected_rate = ([9, 8] if workers == 2 else [7, 6, 4])[worker]
                 assert executor["executor"] == "constant-arrival-rate" and executor["timeUnit"] == "1s", executor
                 assert executor["rate"] == expected_rate, executor
             runs = [read(d / "results/run-spec.json") for d in directories if (d / "results/run-spec.json").exists()]
+            assert all("k6" not in r["tool_versions"] for r in runs)
+            for directory in directories:
+                summary = directory / "results/k6-summary.json"
+                if summary.exists():
+                    assert "k6_version" not in read(summary)
             rates = [a["rate"] for a in runs[0]["workers"]]
             assert rates == ([9, 8] if workers == 2 else [7, 6, 4]), rates
             assert all([a["rate"] for a in r["workers"]] == rates and r["total_rate"] == 17 for r in runs)
@@ -216,7 +223,7 @@ def main():
             completed.append({"case": name, "exit_codes": codes, "rates": rates, "workers": outputs})
             write(root / "completed-cases.json", completed)
             print(f"PASS {name}: {codes}, rates={rates}", flush=True)
-    write(root / "result.json", {"cases": completed, "production_runtime_modified": False})
+    write(root / "result.json", {"k6_version": k6_version, "cases": completed, "production_runtime_modified": False})
 
 
 if __name__ == "__main__":

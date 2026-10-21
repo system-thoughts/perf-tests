@@ -25,10 +25,14 @@
       "pattern": "^[a-f0-9]{64}$"
     },
     "k6_version": {
-      "const": "2.3.0"
+      "description": "Ignored legacy metadata; current workers do not emit this field."
     },
     "native_summary": {
       "type": "object"
+    },
+    "effective_options": {
+      "type": "object",
+      "description": "Native k6 consolidated and derived test options, captured once in handleSummary; null members retain the engine representation."
     }
   },
   "required": [
@@ -37,7 +41,6 @@
     "worker_id",
     "manifest_id",
     "plan_id",
-    "k6_version",
     "native_summary"
   ]
 }

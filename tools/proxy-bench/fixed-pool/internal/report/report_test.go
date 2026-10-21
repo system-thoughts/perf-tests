@@ -37,6 +37,30 @@ func fixture(t *testing.T) (worker.RunSpec, worker.Spec, *NativeSummary, *worker
 	code := 0
 	return worker.RunSpec{SchemaVersion: 1, RunID: "test", WorkerCount: 1}, worker.Spec{SchemaVersion: 1, RunID: "test", ManifestID: "m", PlanID: "p", RegionCount: 3, RangeBytes: 1024}, &n, &worker.Execution{SchemaVersion: 1, RunID: "test", ProcessStartedAt: &timestamp, ProcessEndedAt: &timestamp, ExitCode: &code, TerminationReason: worker.Completed, Errors: []worker.Issue{}}
 }
+
+func TestResultsDoNotCheckEngineVersion(t *testing.T) {
+	for _, mode := range []string{"different-version", "mismatched", "missing-summary-version", "uninterpreted-metadata", "missing-native-field"} {
+		t.Run(mode, func(t *testing.T) {
+			run, spec, n, execution := fixture(t)
+			n.K6Version = "9.8.7-fixture"
+			run.ToolVersions = map[string]string{"k6": "legacy-engine"}
+			switch mode {
+			case "mismatched":
+				run.ToolVersions["k6"] = "other-engine"
+			case "missing-summary-version":
+				n.K6Version = ""
+			case "uninterpreted-metadata":
+				n.K6Version = map[string]any{"old": true}
+			case "missing-native-field":
+				delete(n.Native, "state")
+			}
+			result := Derive(run, spec, n, execution)
+			if result.ResultComplete != (mode != "missing-native-field") {
+				t.Fatalf("%s: %+v", mode, result)
+			}
+		})
+	}
+}
 func TestNativeMappingAndCycles(t *testing.T) {
 	run, spec, n, e := fixture(t)
 	r := Derive(run, spec, n, e)
@@ -166,6 +190,20 @@ func TestPublicationFailurePreservesPrimaryError(t *testing.T) {
 		got := Write(t.TempDir(), worker.Execution{Errors: []worker.Issue{{Code: code, Stage: "execution", Message: "original"}}}, &output)
 		if got != want || !strings.Contains(output.String(), code) || !strings.Contains(output.String(), "WORKER_FAILED") {
 			t.Fatalf("%s code=%d output=%s", code, got, output.String())
+		}
+	}
+}
+
+func TestNativeOptionsQualifyCoverageWithoutRejectingRun(t *testing.T) {
+	for _, options := range []map[string]any{
+		{"executionSegment": "1/2:1", "scenarios": map[string]any{"fixed_pool": map[string]any{}}},
+		{"scenarios": map[string]any{"one": map[string]any{}, "two": map[string]any{}}},
+	} {
+		run, spec, n, execution := fixture(t)
+		n.EffectiveOptions = options
+		result := Derive(run, spec, n, execution)
+		if !result.ResultComplete || result.ExecutionState != worker.Completed || result.Coverage != nil {
+			t.Fatalf("native options should qualify coverage only: %+v", result)
 		}
 	}
 }

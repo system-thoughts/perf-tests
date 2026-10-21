@@ -43,16 +43,26 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 	if e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 || e.ResultDir != "/results" {
 		t.Fatal(e)
 	}
-	for _, extra := range []string{"RESULT_DIR=", "RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "K6_SCENARIOS={}", "K6_THRESHOLDS={}", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
+	for _, extra := range []string{"RESULT_DIR=", "RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
 		t.Run(extra, func(t *testing.T) {
 			if _, err := ReadEnvironment(append(baseEnv(), extra)); err == nil {
 				t.Fatal("accepted invalid environment")
 			}
 		})
 	}
+	for _, extra := range []string{"K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
+		if _, err := ReadEnvironment(append(baseEnv(), extra)); err != nil {
+			t.Fatalf("native k6 environment rejected: %v", err)
+		}
+	}
 	e, err = ReadEnvironment(append(baseEnv(), "TIMEOUT=100ms", "DURATION=5s"))
 	if err != nil || e.GracefulStop != 5100*time.Millisecond {
 		t.Fatalf("%+v %v", e, err)
+	}
+	for _, value := range []string{"1s", "1001ms"} {
+		if _, err := ReadEnvironment(append(baseEnv(), "DURATION="+value)); err != nil {
+			t.Fatalf("rejected supported duration %s: %v", value, err)
+		}
 	}
 }
 func TestExitPriority(t *testing.T) {
@@ -126,7 +136,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := save(t, filepath.Join(dir, "proxy-rules.json"), target.ProxyRules{SchemaVersion: 1, FilteredQueryParams: []string{}})
-	config := target.Config{SchemaVersion: 1, Target: target.Target{Ref: "seed", Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1", InstanceRef: "test-instance", ClientVersion: target.SupportedClient}, ProxyRulesRef: contract.FileRef{Path: "proxy-rules.json", SHA256: contract.Digest(rules)}, Prepare: target.Options{Concurrency: 1, RequestTimeoutMS: 1000, ReadyTimeoutMS: 1000}}
+	config := target.Config{SchemaVersion: 1, Target: target.Target{Ref: "seed", Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1", InstanceRef: "test-instance"}, ProxyRulesRef: contract.FileRef{Path: "proxy-rules.json", SHA256: contract.Digest(rules)}, Prepare: target.Options{Concurrency: 1, RequestTimeoutMS: 1000, ReadyTimeoutMS: 1000}}
 	// JSON is a strict subset of YAML, accepted by the target-config reader.
 	configPath := filepath.Join(dir, "target-config.yaml")
 	save(t, configPath, config)
@@ -149,13 +159,27 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	evidenceRaw := save(t, filepath.Join(dir, "target-object-results.json"), objects)
 	evidenceRef := contract.FileRef{Path: "target-object-results.json", SHA256: contract.Digest(evidenceRaw)}
 	manifestID := data.ManifestSHA256
-	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, IdentitySHA256: &identity, PieceStrategy: "auto", Target: &config.Target, ClientVersion: &config.Target.ClientVersion, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
+	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, IdentitySHA256: &identity, PieceStrategy: "auto", Target: &config.Target, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
 	prepPath := filepath.Join(dir, "target-preparation.json")
 	prepRaw := save(t, prepPath, prep)
 	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"status", "manifest_sha256", "identity_sha256", "client_version", "object_count", "method", "schema_version", "unknown"} {
+	// Opaque evidence need not be semantically audited by every worker. Its
+	// published hash must still match, even if summary bindings are unchanged.
+	opaque := []byte("producer-owned evidence\n")
+	if err = os.WriteFile(filepath.Join(dir, evidenceRef.Path), opaque, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err == nil {
+		t.Fatal("ignored evidence digest")
+	}
+	prep.EvidenceFile.SHA256 = contract.Digest(opaque)
+	prepRaw = save(t, prepPath, prep)
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err != nil {
+		t.Fatalf("worker re-audited producer evidence: %v", err)
+	}
+	for _, field := range []string{"status", "manifest_sha256", "identity_sha256", "object_count", "method", "schema_version", "unknown"} {
 		var value map[string]any
 		if err = json.Unmarshal(prepRaw, &value); err != nil {
 			t.Fatal(err)
@@ -174,8 +198,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 			t.Fatalf("accepted changed %s", field)
 		}
 	}
-	// Worker zero must not read worker one's file, but must reject tampering of
-	// its own fixed order even if the attacker updates that file's digest.
+	// Worker zero needs no peer shard file.
 	if err = os.Remove(filepath.Join(filepath.Dir(p.Path), "shards/1.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +209,9 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err = os.Mkdir(bin, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(bin, "k6"), []byte("#!/bin/sh\necho 'k6 v2.3.0 (test)'\n"), 0700); err != nil {
+	// Preparing inputs must never invoke the engine, including a version probe.
+	probe := filepath.Join(dir, "k6-invoked")
+	if err = os.WriteFile(filepath.Join(bin, "k6"), []byte("#!/bin/sh\nprintf invoked > '"+probe+"'\nexit 99\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
@@ -195,7 +220,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
-		if err = os.WriteFile(filepath.Join(scripts, name), []byte("fixture"), 0600); err != nil {
+		contents := []byte("fixture")
+		if err = os.WriteFile(filepath.Join(scripts, name), contents, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,6 +244,12 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	}
 	if run.TotalRate != 100 || run.WorkerCount != 2 || spec.Rate != 50 || spec.RegionCount != 4 || filepath.IsAbs(run.Manifest.Path) {
 		t.Fatalf("%+v %+v", run, spec)
+	}
+	if _, exists := run.ToolVersions["k6"]; exists {
+		t.Fatal("input preparation must not add engine version metadata")
+	}
+	if _, err = os.Stat(probe); !os.IsNotExist(err) {
+		t.Fatalf("input preparation invoked k6: %v", err)
 	}
 	if err = PrepareInput(ctx, env, scripts, io.Discard); err == nil || contract.ErrorCode(err) != contract.DataConflict {
 		t.Fatal("overwrote existing worker results", err)

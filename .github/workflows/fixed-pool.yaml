@@ -1,0 +1,59 @@
+name: Fixed-pool regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/proxy-bench/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/fixed-pool.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/proxy-bench/**'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/fixed-pool.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Go tests and platform builds
+        run: |
+          go test -mod=readonly -race ./...
+          make build-proxy-bench-tools
+      - name: Obtain the runtime k6 binary
+        run: |
+          k6_image=$(awk 'toupper($1) == "FROM" {print $2; exit}' tools/proxy-bench/Dockerfile)
+          container=$(docker create "$k6_image")
+          trap 'docker rm "$container"' EXIT
+          docker cp "$container:/usr/bin/k6" "$RUNNER_TEMP/k6"
+          chmod +x "$RUNNER_TEMP/k6"
+          "$RUNNER_TEMP/k6" version
+      - name: Controlled HTTP regressions
+        run: |
+          export PATH="$PWD/bin/proxy-bench-tools/amd64:$RUNNER_TEMP:$PATH"
+          make test-proxy-bench-fixed-pool WORK_DIR="$RUNNER_TEMP/fixed-pool-regression"
+      - name: Preserve regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fixed-pool-regression
+          path: ${{ runner.temp }}/fixed-pool-regression
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7

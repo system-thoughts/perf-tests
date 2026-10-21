@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -48,7 +47,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	for _, pair := range environ {
 		key, value, _ := strings.Cut(pair, "=")
 		values[key] = value
-		if key == "MODE" || key == "RANGE" || key == "TARGET_URL" || key == "FILE_SIZE" || key == "CHUNK_SIZE" || key == "STREAMS" || key == "URL_COUNT" || key == "SEED_CLIENT_CPUS" || key == "TAG" || key == "APPLICATION" || key == "CONTENT_ID" || key == "CONTENT_FOR_TASK_ID" || key == "PIECE_LENGTH" || key == "PREFETCH" || key == "HEADERS" || strings.HasPrefix(key, "PROXY_BENCH_") || strings.HasPrefix(key, "X_DRAGONFLY_") || strings.HasPrefix(key, "K6_") && key != "K6_NO_USAGE_REPORT" {
+		if key == "MODE" || key == "RANGE" || key == "TARGET_URL" || key == "FILE_SIZE" || key == "CHUNK_SIZE" || key == "STREAMS" || key == "URL_COUNT" || key == "SEED_CLIENT_CPUS" || key == "TAG" || key == "APPLICATION" || key == "CONTENT_ID" || key == "CONTENT_FOR_TASK_ID" || key == "PIECE_LENGTH" || key == "PREFETCH" || key == "HEADERS" || strings.HasPrefix(key, "PROXY_BENCH_") || strings.HasPrefix(key, "X_DRAGONFLY_") {
 			return e, fmt.Errorf("%s is not supported by fixed-pool", key)
 		}
 	}
@@ -114,6 +113,9 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 		return e, fmt.Errorf("TIMEOUT leaves no representable graceful stop")
 	}
 	e.GracefulStop = duration("GRACEFUL_STOP", e.Timeout+5*time.Second)
+	if err == nil && e.Duration < time.Second {
+		err = fmt.Errorf("DURATION must be at least 1s for the constant-arrival-rate executor")
+	}
 	if err == nil && (e.MaxVUs < e.PreAllocatedVUs || e.GracefulStop <= e.Timeout) {
 		err = fmt.Errorf("MAX_VUS must be >= PRE_ALLOCATED_VUS and GRACEFUL_STOP must exceed TIMEOUT")
 	}
@@ -153,14 +155,7 @@ func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.
 	if err != nil {
 		return contract.Tag(contract.InputInvalid, err)
 	}
-	version, err := exec.CommandContext(ctx, "k6", "version").Output()
-	if err != nil {
-		return contract.Tag("START_FAILED", fmt.Errorf("cannot obtain k6 version: %w", err))
-	}
-	if !strings.HasPrefix(string(version), "k6 v"+K6Version+" ") && !strings.HasPrefix(string(version), "k6 v"+K6Version+" (") {
-		return contract.Tag(contract.ContractMismatch, fmt.Errorf("require k6 v%s", K6Version))
-	}
-	versions := map[string]string{"k6": K6Version, "worker_support": "fixed-pool-v1", "go": runtime.Version()}
+	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version()}
 	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
 		raw, err := os.ReadFile(filepath.Join(scripts, name))
 		if err != nil {

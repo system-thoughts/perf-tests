@@ -2,6 +2,17 @@
 
 This repository includes performance test tools of dragonfly.
 
+## Proxy benchmarks
+
+The [fixed-pool benchmark](tools/proxy-bench/fixed-pool/README.md) prepares
+deterministic objects and reusable HTTP Range plans, verifies a Seed's cached
+dataset, and runs independent k6 workers with per-worker reports. Its guide covers
+building, HTTP source deployment, configuration, execution and result handling.
+The existing proxy-bench repeat, random and sequential modes remain available.
+
+Maintainers can run the [controlled functional regressions](tools/proxy-bench/fixed-pool/tests/README.md)
+without a Dragonfly cluster. They validate tool behavior, not performance capacity.
+
 ## Usage
 
 ### Installation

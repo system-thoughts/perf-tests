@@ -24,9 +24,9 @@ This bundle does not run a benchmark or establish that a Seed is ready.
 ## Before starting
 
 Provide a working cluster, a namespace, a source node and suitable storage.
-The operator terminal needs kubectl, a POSIX shell, envsubst, Python 3, curl and
+The operator terminal needs kubectl, a POSIX shell, envsubst, Python 3 and
 sha256sum. The tools themselves are Go binaries; Python is used only by the
-operator-side configuration, result-handoff and HTTP checks in the walkthrough.
+operator-side configuration, Job status and result handoff in the walkthrough.
 
 Provide two immutable image references that the source node can obtain:
 
@@ -76,11 +76,29 @@ Follow [OPERATIONS.md](OPERATIONS.md) in one shell session:
 | 2 | Prepare storage; create a PVC only if needed. | Correct volume and an empty/absent dataset directory. |
 | 3 | Run the data Job and preserve its actual result. | Successful Pod, original log and manifest reference. |
 | 4 | Start nginx and export the referenced manifest. | Local manifest SHA-256 matches the generation result. |
-| 5 | Check the exact manifest URLs from the Seed's network. | HEAD, full-body digest and HTTP 206 Range pass. |
+| 5 | Pass the manifest to Seed preparation. | Every object's length, digest and target completion pass. |
 
 The walkthrough explains the longer configuration and JSON-checking snippets,
-including their inputs and outputs. Result handoff and source checks are required;
-they are not repeated for every request or every unchanged test round.
+including their inputs and outputs. No separate source-body download or manual
+HEAD/GET/Range check is required before Seed preparation.
+
+## Interface guarantees
+
+The generation Job and nginx take their PVC name from the same configuration.
+Templates fix the generation root, read-only server mounts and object URL paths;
+operators do not independently assemble those mappings. Start the server only
+after the generation Job succeeds. Export the manifest named by that Job's actual
+result and verify its digest; never scan for a "latest" manifest.
+
+The walkthrough stops on generation failure, but these are separately applied
+resources, not a controller that prevents manual out-of-order submission. Seed
+preparation checks the pool through the selected Seed and reports object IDs,
+failure stages and reasons. It streams bodies without saving another copy.
+This does not certify an origin that was bypassed by an existing Seed cache.
+
+Maintainers verify the published source's GET/HEAD/Range behavior and deployment
+faults with [source regressions](../../tests/README.md#kubernetes-source-regression).
+Benchmark users do not run these developer tests as a preparation step.
 
 ## Where the data goes
 
@@ -104,13 +122,13 @@ for a "latest" manifest.
 - Repeated rounds, RATE changes and R/W changes reuse the source bytes and URL.
   R/W changes need a separate access plan, not another data Job.
 - B/N changes require a new dataset. Keep the old manifest and objects immutable.
-- Server, mount or network failures require service repair and HTTP rechecks.
+- Server, mount or network failures require repair of the original endpoint.
   Restarting nginx does not regenerate data. Restore the original endpoint.
 - Preserve failed generation logs and remnants before choosing a new empty
   dataset or inspecting ownership for manual cleanup. Do not adopt partial data.
 - Deleting the completed Job or restarting the server does not delete the PVC.
 
 Retain source.env, rendered resources, Job/Pod facts and imageIDs, generation
-logs, the exported manifest and HTTP evidence. Once the source checks pass,
-continue with [plan preparation](../../README.md#prepare-or-reuse-an-access-plan)
+logs and the exported manifest. After publication, continue with
+[plan preparation](../../README.md#prepare-or-reuse-an-access-plan)
 and [Seed preparation](../../README.md#prepare-a-target-seed-cache).

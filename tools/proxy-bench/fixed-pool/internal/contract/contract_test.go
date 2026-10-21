@@ -120,12 +120,12 @@ func TestNullableRecordsRemainStrict(t *testing.T) {
 }
 
 func TestSourceURL(t *testing.T) {
-	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://LOCALHOST.", "http://x.localhost", "http://127.0.0.1", "http://[::1]", "http://[::ffff:127.0.0.1]", "http://source.example:0", "http://source.example:65536"} {
+	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://source.example:0", "http://source.example:65536"} {
 		if _, err := NormalizeBaseURL(input); err == nil {
 			t.Errorf("accepted %q", input)
 		}
 	}
-	for input, want := range map[string]string{"http://SOURCE.example:80/base/": "http://source.example/base", "http://source.example": "http://source.example", "http://[2001:db8::1]:8080/": "http://[2001:db8::1]:8080", "http://source.example/base%2Fname//v/": "http://source.example/base%2Fname//v"} {
+	for input, want := range map[string]string{"http://LOCALHOST.": "http://localhost.", "http://x.localhost": "http://x.localhost", "http://127.0.0.1": "http://127.0.0.1", "http://[::1]": "http://[::1]", "http://[::ffff:127.0.0.1]": "http://[::ffff:127.0.0.1]", "http://SOURCE.example:80/base/": "http://source.example/base", "http://source.example": "http://source.example", "http://[2001:db8::1]:8080/": "http://[2001:db8::1]:8080", "http://source.example/base%2Fname//v/": "http://source.example/base%2Fname//v"} {
 		got, err := NormalizeBaseURL(input)
 		if err != nil || got != want {
 			t.Errorf("normalize %q = %q, %v; want %q", input, got, err, want)

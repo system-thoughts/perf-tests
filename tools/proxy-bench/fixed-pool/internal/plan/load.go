@@ -88,13 +88,12 @@ func loadSelected(ctx context.Context, name string, manifest contract.Manifest, 
 		}
 	}
 	actual = uint64(len(raw) + len(objects))
-	if expected == nil {
-		expected, err = permutation(ctx, total)
-		if err != nil {
-			return p, nil, 0, err
-		}
+	// Only publication supplies the producer's permutation. Reuse and worker
+	// startup check artifact integrity without repeating the generation algorithm.
+	var seen []byte
+	if expected != nil {
+		seen = make([]byte, int((total+7)/8))
 	}
-	seen := make([]byte, int((total+7)/8))
 	for worker, shard := range p.Shards {
 		if shard.WorkerID != uint64(worker) || shard.RegionCount != ShardCount(total, p.WorkerCount, uint64(worker)) || shard.Path != "shards/"+strconv.Itoa(worker)+".json" || !contract.ValidDigest(shard.SHA256) {
 			return p, nil, 0, fmt.Errorf("shard %d metadata mismatch", worker)
@@ -148,14 +147,16 @@ func checkShard(ctx context.Context, name string, shard contract.Shard, total ui
 		if err != nil || g >= total || count >= shard.RegionCount {
 			return 0, fmt.Errorf("region/count outside shard bounds")
 		}
-		if uint64(expected[shard.WorkerID+count*workers]) != g {
+		if expected != nil && uint64(expected[shard.WorkerID+count*workers]) != g {
 			return 0, fmt.Errorf("region %d violates fixed shard order or membership", g)
 		}
-		mask := byte(1 << (g % 8))
-		if seen[g/8]&mask != 0 {
-			return 0, fmt.Errorf("duplicate region %d", g)
+		if seen != nil {
+			mask := byte(1 << (g % 8))
+			if seen[g/8]&mask != 0 {
+				return 0, fmt.Errorf("duplicate region %d", g)
+			}
+			seen[g/8] |= mask
 		}
-		seen[g/8] |= mask
 		count++
 	}
 	if _, err := decoder.Token(); err != nil {

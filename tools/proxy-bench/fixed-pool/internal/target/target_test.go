@@ -73,7 +73,7 @@ func newFixture(t *testing.T, mode string, count uint64) *fixture {
 	if err := os.WriteFile(filepath.Join(dir, "rules.json"), rules, 0600); err != nil {
 		t.Fatal(err)
 	}
-	config := fmt.Sprintf("schema_version: 1\ntarget:\n  ref: seed-one\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n  instance_ref: test-instance\n  client_version: v1.5.7\nproxy_rules_ref:\n  path: rules.json\n  sha256: %s\n", server.URL, contract.Digest(rules))
+	config := fmt.Sprintf("schema_version: 1\ntarget:\n  ref: seed-one\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n  instance_ref: test-instance\nproxy_rules_ref:\n  path: rules.json\n  sha256: %s\n", server.URL, contract.Digest(rules))
 	name := filepath.Join(dir, "target.yaml")
 	if err := os.WriteFile(name, []byte(config), 0600); err != nil {
 		t.Fatal(err)
@@ -330,7 +330,6 @@ func TestConfigDefaultsAndStrictInputs(t *testing.T) {
 		string(original) + "prepare:\n  ready_timeout_ms: 0\n",
 		string(original) + "---\nschema_version: 1\n",
 		strings.Replace(string(original), "192.0.2.10", "not-an-ip", 1),
-		strings.Replace(string(original), "v1.5.7", "v1.3.11", 1),
 	}
 	for i, raw := range mutations {
 		if err := os.WriteFile(f.spec.TargetConfig, []byte(raw), 0600); err != nil {
@@ -339,6 +338,21 @@ func TestConfigDefaultsAndStrictInputs(t *testing.T) {
 		if _, _, err := ReadConfig(f.spec.TargetConfig); err == nil {
 			t.Fatalf("accepted invalid config %d", i)
 		}
+	}
+}
+
+func TestPreparationNeedsNoClientVersion(t *testing.T) {
+	f := newFixture(t, "ok", 1)
+	result, err := Prepare(context.Background(), f.spec)
+	if err != nil || result.Status != StatusReady {
+		t.Fatalf("preparation without client metadata: %+v %v", result, err)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "client_version") {
+		t.Fatal("emitted obsolete client metadata")
 	}
 }
 

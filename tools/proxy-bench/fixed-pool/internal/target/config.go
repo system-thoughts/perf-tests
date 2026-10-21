@@ -40,7 +40,6 @@ const (
 	headerFalse      = "false"
 	headerTrue       = "true"
 	Method           = "http-full-body-and-finished-v1"
-	SupportedClient  = "v1.5.7"
 	Unsupported      = "TARGET_UNSUPPORTED"
 	Unverified       = "TARGET_UNVERIFIED"
 )
@@ -50,7 +49,6 @@ type Target struct {
 	Proxy            string `json:"proxy"`
 	ExpectedServerIP string `json:"expected_server_ip"`
 	InstanceRef      string `json:"instance_ref"`
-	ClientVersion    string `json:"client_version"`
 }
 
 type Options struct {
@@ -119,9 +117,6 @@ func ReadConfig(name string) (Config, string, error) {
 	}
 	if err != nil {
 		return c, "", contract.Tag(contract.ContractMismatch, err)
-	}
-	if c.Target.ClientVersion != SupportedClient {
-		return c, "", contract.Tag(Unsupported, fmt.Errorf("client version %q is not supported; require %s", c.Target.ClientVersion, SupportedClient))
 	}
 	rulesPath := c.ProxyRulesRef.Path
 	if !filepath.IsAbs(rulesPath) {

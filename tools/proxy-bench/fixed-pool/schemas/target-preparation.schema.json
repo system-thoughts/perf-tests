@@ -57,28 +57,14 @@
             "instance_ref": {
               "type": "string",
               "minLength": 1
-            },
-            "client_version": {
-              "const": "v1.5.7"
             }
           },
           "required": [
             "ref",
             "proxy",
             "expected_server_ip",
-            "instance_ref",
-            "client_version"
+            "instance_ref"
           ]
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "client_version": {
-      "anyOf": [
-        {
-          "const": "v1.5.7"
         },
         {
           "type": "null"
@@ -212,7 +198,6 @@
     "identity_sha256",
     "piece_strategy",
     "target",
-    "client_version",
     "prepare",
     "method",
     "started_at",
@@ -260,21 +245,14 @@
               "instance_ref": {
                 "type": "string",
                 "minLength": 1
-              },
-              "client_version": {
-                "const": "v1.5.7"
               }
             },
             "required": [
               "ref",
               "proxy",
               "expected_server_ip",
-              "instance_ref",
-              "client_version"
+              "instance_ref"
             ]
-          },
-          "client_version": {
-            "const": "v1.5.7"
           },
           "prepare": {
             "type": "object",

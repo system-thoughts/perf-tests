@@ -33,12 +33,8 @@ func NormalizeBaseURL(value string) (string, error) {
 		return "", fmt.Errorf("base_url must be HTTP without credentials, query or fragment")
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "" || strings.TrimSuffix(host, ".") == "localhost" || strings.HasSuffix(strings.TrimSuffix(host, "."), ".localhost") {
-		return "", fmt.Errorf("base_url must not use localhost")
-	}
-	ip := net.ParseIP(strings.Split(host, "%")[0])
-	if ip != nil && ip.IsLoopback() {
-		return "", fmt.Errorf("base_url must not use a loopback IP")
+	if host == "" {
+		return "", fmt.Errorf("base_url must have a host")
 	}
 	port := u.Port()
 	if port != "" {

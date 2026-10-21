@@ -59,7 +59,6 @@ type Result struct {
 	IdentitySHA256 *string           `json:"identity_sha256"`
 	PieceStrategy  string            `json:"piece_strategy"`
 	Target         *Target           `json:"target"`
-	ClientVersion  *string           `json:"client_version"`
 	Prepare        *Options          `json:"prepare"`
 	Method         string            `json:"method"`
 	StartedAt      string            `json:"started_at"`
@@ -104,7 +103,6 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	}
 	result.IdentitySHA256 = &identity
 	result.Target = &c.Target
-	result.ClientVersion = &c.Target.ClientVersion
 	result.Prepare = &c.Prepare
 	lock, err := contract.AcquireLock(s.Out, ".prepare.lock")
 	if err != nil {

@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: ${WORKER_NODE}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${DATA_UID}
+        runAsGroup: ${DATA_GID}
+        fsGroup: ${FS_GROUP}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ${WORKER_IMAGE}
+          command: ["/bin/sh", "/home/k6/fixed-pool/run-benchmark.sh"]
+          env:
+            - name: MANIFEST
+              value: /inputs/dataset-manifest.json
+            - name: PLAN
+              value: /inputs/plans/${PLAN_KEY}/request-plan.json
+            - name: TARGET_PREPARATION
+              value: /inputs/preparations/${PREPARATION_NAME}/target-preparation.json
+            - name: TARGET_CONFIG
+              value: /inputs/target-config.yaml
+            - name: HTTP_PROXY
+              value: "${HTTP_PROXY}"
+            - name: RATE
+              value: "${RATE}"
+            - name: DURATION
+              value: "${DURATION}"
+            - name: RUN_ID
+              value: "${RUN_ID}"
+            - name: WORKER_ID
+              value: "${WORKER_ID}"
+            - name: RESULT_DIR
+              value: /results
+          resources:
+            requests:
+              cpu: "${WORKER_CPU_REQUEST}"
+              memory: "${WORKER_MEMORY_REQUEST}"
+            limits:
+              cpu: "${WORKER_CPU_LIMIT}"
+              memory: "${WORKER_MEMORY_LIMIT}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: inputs
+              mountPath: /inputs
+              readOnly: true
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: inputs
+          persistentVolumeClaim:
+            claimName: ${METADATA_PVC}
+            readOnly: true
+        - name: results
+          emptyDir: {}

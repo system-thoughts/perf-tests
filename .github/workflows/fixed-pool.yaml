@@ -47,6 +47,15 @@ jobs:
         run: |
           export PATH="$PWD/bin/proxy-bench-tools/amd64:$RUNNER_TEMP:$PATH"
           make test-proxy-bench-fixed-pool WORK_DIR="$RUNNER_TEMP/fixed-pool-regression"
+      - name: Deployment rendering checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base python3-yaml
+          /usr/bin/python3 tools/proxy-bench/fixed-pool/tests/deploy.py \
+            --work-dir "$RUNNER_TEMP/fixed-pool-regression/deploy"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
       - name: Build distribution archives
         shell: bash
         run: |
@@ -68,12 +77,14 @@ jobs:
             -t "localhost/proxy-bench-tools:sha-$GITHUB_SHA" -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
           docker buildx build --platform linux/amd64 --load \
             -t localhost/proxy-bench:ci-smoke -f tools/proxy-bench/Dockerfile .
-          docker run --rm --entrypoint /bin/sh localhost/proxy-bench:ci-smoke -c \
-            'test ! -e /home/k6/fixed-pool/tests && proxy-bench-worker-support prepare-input --help >/dev/null && k6 version'
+          docker run --rm --user 1000:1000 --tmpfs /results:uid=1000,gid=1000 \
+            --entrypoint /bin/sh localhost/proxy-bench:ci-smoke -ec \
+            'test ! -e /home/k6/fixed-pool/tests; test -r /home/k6/fixed-pool/benchmark.js; test -r /home/k6/fixed-pool/lib/plan.js; /bin/sh -n /home/k6/fixed-pool/run-benchmark.sh; proxy-bench-worker-support prepare-input --help >/dev/null; k6 version; k6 new /results/smoke.js; test -s /results/smoke.js'
           docker buildx build --platform linux/amd64 --load \
             -t localhost/proxy-bench-tools:ci-smoke -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
-          docker run --rm --entrypoint /bin/sh localhost/proxy-bench-tools:ci-smoke -c \
-            'proxy-bench-data-prepare --help >/dev/null && proxy-bench-plan-prepare --help >/dev/null && proxy-bench-seed-cache-prepare --help >/dev/null'
+          docker run --rm --user 1000:1000 --tmpfs /data:uid=1000,gid=1000 \
+            --entrypoint /bin/sh localhost/proxy-bench-tools:ci-smoke -ec \
+            'proxy-bench-data-prepare --help >/dev/null; proxy-bench-plan-prepare --help >/dev/null; proxy-bench-seed-cache-prepare --help >/dev/null; jq --version; command -v tar; proxy-bench-data-prepare --size 64 --count 2 --root /data/dataset --base-url http://source.example > /data/result.json; jq -er .manifest.path /data/result.json | xargs test -f'
           cp LICENSE "$dist_dir/LICENSE"
           python3 - <<'PYINFO'
           import json, os, pathlib, subprocess

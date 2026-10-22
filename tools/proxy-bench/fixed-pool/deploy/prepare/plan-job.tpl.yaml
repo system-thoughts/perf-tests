@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: ${METADATA_NODE}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${DATA_UID}
+        runAsGroup: ${DATA_GID}
+        fsGroup: ${FS_GROUP}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prepare
+          image: ${TOOLS_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              job_name=$(printenv JOB_NAME)
+              range_bytes=$(printenv R)
+              workers=$(printenv W)
+              memory_budget=$(printenv PLAN_MEMORY_BUDGET)
+              file_budget=$(printenv PLAN_FILE_BUDGET)
+              mkdir -p /inputs/reports
+              set -- /usr/local/bin/proxy-bench-plan-prepare \
+                --manifest /inputs/dataset-manifest.json --range "$range_bytes" --workers "$workers" \
+                --plan-dir /inputs/plans
+              if [ -n "$memory_budget" ]; then
+                set -- "$@" --memory-budget "$memory_budget"
+              fi
+              if [ -n "$file_budget" ]; then
+                set -- "$@" --file-budget "$file_budget"
+              fi
+              set -C
+              exec "$@" > "/inputs/reports/$job_name.json"
+          env:
+            - name: JOB_NAME
+              value: "${JOB_NAME}"
+            - name: R
+              value: "${R}"
+            - name: W
+              value: "${W}"
+            - name: PLAN_MEMORY_BUDGET
+              value: "${PLAN_MEMORY_BUDGET}"
+            - name: PLAN_FILE_BUDGET
+              value: "${PLAN_FILE_BUDGET}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "${PREPARE_CPU_REQUEST}"
+              memory: "${PREPARE_MEMORY_REQUEST}"
+            limits:
+              cpu: "${PREPARE_CPU_LIMIT}"
+              memory: "${PREPARE_MEMORY_LIMIT}"
+          volumeMounts:
+            - name: metadata
+              mountPath: /inputs
+      volumes:
+        - name: metadata
+          persistentVolumeClaim:
+            claimName: ${METADATA_PVC}

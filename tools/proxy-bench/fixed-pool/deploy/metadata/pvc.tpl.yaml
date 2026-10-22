@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${METADATA_PVC}
+  namespace: ${NAMESPACE}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: "${METADATA_STORAGE_CLASS}"
+  resources:
+    requests:
+      storage: "${METADATA_CAPACITY}"

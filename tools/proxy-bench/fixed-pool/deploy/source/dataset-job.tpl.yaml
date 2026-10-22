@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: ${SOURCE_NAME}-data
+  name: ${JOB_NAME}
   namespace: ${NAMESPACE}
   labels:
     app.kubernetes.io/name: proxy-bench-fixed-pool-source
@@ -19,6 +19,7 @@ spec:
         component: dataset
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       nodeSelector:
         kubernetes.io/hostname: ${SOURCE_NODE}
       securityContext:
@@ -26,24 +27,41 @@ spec:
         runAsUser: ${DATA_UID}
         runAsGroup: ${DATA_GID}
         fsGroup: ${FS_GROUP}
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: dataset
           image: ${TOOLS_IMAGE}
           imagePullPolicy: IfNotPresent
-          command: ["/usr/local/bin/proxy-bench-data-prepare"]
+          command: ["/bin/sh", "-ec"]
           args:
-            - --size
-            - "${B}"
-            - --count
-            - "${N}"
-            - --root
-            - /data/dataset
-            - --base-url
-            - "${BASE_URL}"
-            - --generation-workers
-            - "${GENERATION_WORKERS}"
+            - |
+              job_name=$(printenv JOB_NAME)
+              object_bytes=$(printenv B)
+              object_count=$(printenv N)
+              base_url=$(printenv BASE_URL)
+              generation_workers=$(printenv GENERATION_WORKERS)
+              mkdir -p /data/reports
+              set -C
+              exec /usr/local/bin/proxy-bench-data-prepare \
+                --size "$object_bytes" --count "$object_count" --root /data/dataset \
+                --base-url "$base_url" --generation-workers "$generation_workers" \
+                > "/data/reports/$job_name.json"
+          env:
+            - name: JOB_NAME
+              value: "${JOB_NAME}"
+            - name: B
+              value: "${B}"
+            - name: "N"
+              value: "${N}"
+            - name: BASE_URL
+              value: "${BASE_URL}"
+            - name: GENERATION_WORKERS
+              value: "${GENERATION_WORKERS}"
           securityContext:
             allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "${DATA_CPU_REQUEST}"

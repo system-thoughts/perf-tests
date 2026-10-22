@@ -10,12 +10,15 @@ from contextlib import contextmanager
 import hashlib
 import http.client
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
 import time
 import uuid
+
+import yaml
+
+from deploy import render as render_deployment
 
 
 def write(path, value):
@@ -84,23 +87,144 @@ class Regression:
                         (self.source / "source.env.example").read_text().splitlines()
                         if line and not line.startswith("#"))
         settings.update(SOURCE_NAME=self.name, PVC_NAME=self.name,
+                        JOB_NAME=self.name + "-data",
                         NAMESPACE=self.args.namespace, SOURCE_NODE=self.args.node,
                         TOOLS_IMAGE=self.args.tools_image, FILE_SERVER_IMAGE=self.args.file_server_image,
                         PVC_STORAGE_CLASS=self.args.storage_class, PVC_CAPACITY="64Mi", B="64", N="2")
         settings["BASE_URL"] = f'http://{self.name}.{self.args.namespace}.svc.cluster.local'
         write(self.root / "settings.json", settings)
+        self.settings = settings
         paths = []
-        variables = " ".join("${" + key + "}" for key in settings)
         for template in ("pvc.example.yaml", "dataset-job.tpl.yaml", "file-server.tpl.yaml"):
             path = self.root / template.replace(".tpl", "").replace(".example", "")
-            rendered = subprocess.run(["envsubst", variables],
-                                      input=(self.source / template).read_bytes(),
-                                      env={**os.environ, **settings}, capture_output=True, check=True).stdout
-            assert not re.search(rb"\$\{[A-Z_]+\}", rendered), template
-            path.write_bytes(rendered)
+            rendered = render_deployment(self.source.parent, self.source / template, settings)
+            path.write_text(rendered)
             self.kube("apply", "--dry-run=server", "-f", str(path))
             paths.append(path)
         return settings, paths
+
+    def render_template(self, name, settings, output):
+        output.write_text(render_deployment(self.source.parent, self.source.parent / name, settings))
+        self.kube("apply", "--dry-run=server", "-f", str(output))
+        return output
+
+    def transfer(self, settings, name):
+        values = {**settings, "TRANSFER_POD_NAME": name}
+        path = self.render_template("metadata/source-transfer-pod.tpl.yaml", values,
+                                    self.root / (name + ".yaml"))
+        self.create(path)
+        self.kube("wait", "--for=condition=Ready", "pod/" + name, "--timeout=120s", timeout=130)
+        return name
+
+    def report(self, pod, name):
+        raw = self.kube("exec", pod, "--", "cat", "/data/reports/" + name + ".json").stdout
+        (self.root / (name + "-report.json")).write_bytes(raw)
+        return json.loads(raw)
+
+    def data_job(self, name, **changes):
+        settings = {**self.settings, "JOB_NAME": name, **changes}
+        return self.render_template("source/dataset-job.tpl.yaml", settings,
+                                    self.root / (name + ".yaml"))
+
+    def pod_for_job(self, name):
+        items = json.loads(self.kube("get", "pods", "-l",
+                                    "batch.kubernetes.io/job-name=" + name, "-o", "json").stdout)["items"]
+        assert len(items) == 1, "inspect unexpected replacement Pods"
+        return items[0]
+
+    def report_failures(self, transfer, initial_report):
+        # Recreating the original Job must fail at redirection before Go starts.
+        name = self.name + "-data"
+        self.create(self.data_job(name))
+        self.wait_job(name, success=False)
+        log = self.kube("logs", "job/" + name).stdout
+        assert b"Preparing a new fixed dataset" not in log
+        assert self.report(transfer, name) == initial_report
+        self.completed("existing-report-is-not-overwritten")
+
+        # The data root remains writable: only the report mount is read-only.
+        name = self.name + "-readonly-report"
+        path = self.data_job(name)
+        spec = yaml.safe_load(path.read_text())
+        pod = spec["spec"]["template"]["spec"]
+        pod["volumes"].append({"name": "readonly-report", "emptyDir": {}})
+        pod["containers"][0]["volumeMounts"].append(
+            {"name": "readonly-report", "mountPath": "/data/reports", "readOnly": True})
+        path.write_text(json.dumps(spec))
+        self.create(path)
+        self.wait_job(name, success=False)
+        assert b"Preparing a new fixed dataset" not in self.kube("logs", "job/" + name).stdout
+        assert self.kube("exec", transfer, "--", "test", "!", "-e",
+                         "/data/reports/" + name + ".json", check=False).returncode == 0
+        self.completed("report-write-failure-does-not-start-generation")
+
+        # Two test Jobs deliberately collide on one report path. The dataset
+        # already exists, so the single admitted generator reports DATA_CONFLICT.
+        shared = self.name + "-race"
+        names = [shared + "-0", shared + "-1"]
+        for name in names:
+            path = self.data_job(name)
+            spec = yaml.safe_load(path.read_text())
+            for entry in spec["spec"]["template"]["spec"]["containers"][0]["env"]:
+                if entry["name"] == "JOB_NAME":
+                    entry["value"] = shared
+            path.write_text(json.dumps(spec))
+            self.create(path)
+        admitted = 0
+        for name in names:
+            self.wait_job(name, success=False)
+            admitted += b"Preparing a new fixed dataset" in self.kube("logs", "job/" + name).stdout
+        assert admitted == 1, "exclusive report creation admitted more than one generator"
+        report = self.report(transfer, shared)
+        assert report["manifest"] is None and report["errors"][0]["code"] == "DATA_CONFLICT"
+        self.completed("concurrent-report-creation-admits-one-writer")
+
+        # Startup failure leaves an empty reserved report, never a success JSON.
+        name = self.name + "-missing-command"
+        path = self.data_job(name)
+        spec = yaml.safe_load(path.read_text())
+        args = spec["spec"]["template"]["spec"]["containers"][0]["args"]
+        args[0] = args[0].replace("/usr/local/bin/proxy-bench-data-prepare", "/nonexistent-command")
+        path.write_text(json.dumps(spec))
+        self.create(path)
+        self.wait_job(name, success=False)
+        raw = self.kube("exec", transfer, "--", "cat", "/data/reports/" + name + ".json").stdout
+        assert raw == b""
+        status = self.pod_for_job(name)["status"]["containerStatuses"][0]["state"]["terminated"]
+        assert status["exitCode"] == 127
+        self.completed("startup-failure-empty-report-is-not-success")
+
+    def interrupt_generation(self):
+        # A separate pool leaves the successful source and its report untouched.
+        name = self.name + "-interrupt"
+        pvc = yaml.safe_load((self.root / "pvc.yaml").read_text())
+        pvc["metadata"]["name"] = name
+        pvc["spec"]["resources"]["requests"]["storage"] = "4Gi"
+        path = self.root / (name + "-pvc.json")
+        write(path, pvc)
+        self.create(path)
+        self.create(self.data_job(name, PVC_NAME=name, B=str(4 * 1024**3), N="1"))
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            items = json.loads(self.kube("get", "pods", "-l",
+                                        "batch.kubernetes.io/job-name=" + name, "-o", "json").stdout)["items"]
+            if items and items[0]["status"]["phase"] == "Running":
+                pod = items[0]["metadata"]["name"]
+                result = self.kube("exec", pod, "--", "/bin/sh", "-ec",
+                                   'test "$(readlink /proc/1/exe)" = /usr/local/bin/proxy-bench-data-prepare; '
+                                   'test -d /data/dataset/.fixed-pool-incomplete; kill -TERM 1', check=False)
+                if result.returncode == 0:
+                    break
+            time.sleep(0.1)
+        else:
+            raise TimeoutError("could not signal the running generator")
+        self.wait_job(name, success=False)
+        status = self.pod_for_job(name)["status"]["containerStatuses"][0]["state"]["terminated"]
+        assert status["exitCode"] == 130, status
+        transfer = self.transfer({**self.settings, "PVC_NAME": name}, name + "-files")
+        report = self.report(transfer, name)
+        assert report["manifest"] is None and any(e["code"] == "INTERRUPTED" for e in report["errors"])
+        self.completed("sigterm-retains-failure-report")
 
     @contextmanager
     def forward(self):
@@ -152,17 +276,10 @@ class Regression:
         pods = json.loads(self.kube("get", "pods", "-l",
                                    "batch.kubernetes.io/job-name=" + self.name + "-data", "-o", "json").stdout)["items"]
         assert len(pods) == 1 and pods[0]["status"]["phase"] == "Succeeded"
-        raw_log = self.kube("logs", pods[0]["metadata"]["name"]).stdout
-        results = []
-        for line in raw_log.splitlines():
-            try:
-                result = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(result, dict) and "generated_objects" in result and "manifest" in result:
-                results.append(result)
-        assert len(results) == 1 and results[0]["errors"] == []
-        generated = results[0]
+        self.kube("logs", pods[0]["metadata"]["name"])
+        transfer = self.transfer(settings, self.name + "-files")
+        generated = self.report(transfer, self.name + "-data")
+        assert generated["errors"] == []
         assert generated["generated_objects"] == 2 and generated["generated_bytes"] == 128
         manifest_id = generated["manifest"]["sha256"]
         assert generated["manifest"]["path"] == f"/data/dataset/manifests/{manifest_id}/dataset-manifest.json"
@@ -174,6 +291,10 @@ class Regression:
         mounts = {m["mountPath"]: m for m in serving["containers"][0]["volumeMounts"]}
         assert mounts["/usr/share/nginx/html/objects"]["subPath"] == "dataset/objects"
         assert mounts["/usr/share/nginx/html/objects"]["readOnly"] is True
+        returned = self.kube("exec", transfer, "--", "jq", "-er", ".manifest.path",
+                             "/data/reports/" + self.name + "-data.json").stdout.decode().strip()
+        raw = self.kube("exec", transfer, "--", "cat", returned).stdout
+        assert hashlib.sha256(raw).hexdigest() == manifest_id
         path = f"/fixed-pool-data/manifests/{manifest_id}/dataset-manifest.json"
         raw = self.kube("exec", self.name + "-0", "--", "cat", path).stdout
         assert hashlib.sha256(raw).hexdigest() == manifest_id
@@ -219,28 +340,44 @@ class Regression:
         self.completed("restore-without-regeneration")
 
         # A fresh Job against the nonempty root must fail without publishing a new result.
-        self.create(job)
-        self.wait_job(self.name + "-data", success=False)
-        failed_log = self.kube("logs", "job/" + self.name + "-data").stdout
-        assert b"DATA_CONFLICT" in failed_log and b'"manifest":null' in failed_log
+        conflict = self.name + "-conflict"
+        self.create(self.data_job(conflict))
+        self.wait_job(conflict, success=False)
+        failed = self.report(transfer, conflict)
+        assert failed["manifest"] is None and any(e["code"] == "DATA_CONFLICT" for e in failed["errors"])
+        assert self.report(transfer, self.name + "-data") == generated
         assert self.kube("exec", self.name + "-0", "--", "cat", path).stdout == raw
         self.completed("generation-conflict-preserves-dataset")
+        self.report_failures(transfer, generated)
+        self.interrupt_generation()
 
     def cleanup(self):
-        pods = self.kube("get", "pods", "-l", "app.kubernetes.io/instance=" + self.name, "-o", "json", check=False)
-        if pods.returncode == 0:
-            for pod in json.loads(pods.stdout)["items"]:
-                name = pod["metadata"]["name"]
-                self.kube("logs", name, "--pod-running-timeout=2s", check=False)
-                self.kube("describe", "pod", name, check=False)
-        for kind, name, uid in reversed(self.created):
-            self.kube("get", "events", "--field-selector", "involvedObject.name=" + name,
-                      "-o", "json", check=False)
-            current = self.kube("get", kind, name, "-o", "json", "--ignore-not-found", check=False)
-            if current.returncode or not current.stdout.strip():
-                continue
-            assert json.loads(current.stdout)["metadata"]["uid"] == uid, "resource identity changed; not deleting"
-            self.kube("delete", kind, name, "--wait=true", "--timeout=60s", timeout=70)
+        if not self.created:
+            return
+        # Keep the last UID when a test deliberately deletes/recreates its Job.
+        expected = {(kind, name): uid for kind, name, uid in self.created}
+        owned_uids = {uid for _, _, uid in self.created}
+        pods = json.loads(self.kube("get", "pods", "-o", "json").stdout)["items"]
+        owned_pods = [pod for pod in pods if
+                      ("Pod", pod["metadata"]["name"]) in expected or
+                      any(owner["uid"] in owned_uids for owner in pod["metadata"].get("ownerReferences", []))]
+        write(self.root / "cleanup-pods.json", owned_pods)
+        for pod in owned_pods:
+            self.kube("logs", pod["metadata"]["name"], "--pod-running-timeout=2s", check=False)
+        self.kube("get", "events", "-o", "json", check=False)
+        # Batch observation avoids one discovery/get/delete round trip per object.
+        refs = [kind + "/" + name for kind, name in expected]
+        result = self.kube("get", *refs, "-o", "json", "--ignore-not-found")
+        observed = json.loads(result.stdout)
+        resources = observed.get("items", [observed])
+        selected = []
+        for resource in resources:
+            key = resource["kind"], resource["metadata"]["name"]
+            assert resource["metadata"]["uid"] == expected[key], "resource identity changed; not deleting"
+            selected.append(key[0] + "/" + key[1])
+        write(self.root / "cleanup-uid-check.json", resources)
+        if selected:
+            self.kube("delete", *selected, "--wait=true", "--timeout=120s", timeout=130)
 
 
 def main():

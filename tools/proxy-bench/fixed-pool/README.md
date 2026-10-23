@@ -485,7 +485,7 @@ Connection reuse remains enabled. The native k6/Go HTTP transport can transparen
 resend an idempotent GET when a reused connection fails before response headers.
 This uses the same URL and Range and does not consume another plan item. Native
 `http_reqs`, QPS and duration retain their original semantics; physical GET counts
-observed at the proxy can differ. The controlled regression includes this case.
+observed at the proxy can differ.
 
 ### Worker configuration
 
@@ -529,7 +529,7 @@ preparing inputs or deriving results. New summaries omit `k6_version`; older
 summaries may contain it, and the reader ignores that metadata. `tool_versions`
 retains helper/Go and script identifiers, without a required k6 entry.
 Required native metrics and fields are still checked for result completeness.
-Dependency upgrades must pass both controlled suites using the Dockerfile's engine;
+Dependency upgrades must pass the relevant external regressions using the delivered engine;
 API or summary changes can require adaptation. Runtime success alone does not
 establish compatibility of an untested engine.
 
@@ -583,35 +583,18 @@ cross-worker report or summarize command. An operator may choose a separate
 aggregation method; averaging per-worker percentiles does not yield an overall
 percentile, and a missing worker is not a zero-valued worker.
 
-## Controlled execution regression
+## Maintainer tests
 
-For execution triggers, prerequisites, scope and retained results, see
-[the regression guide](tests/README.md). Run both suites before merging fixed-pool
-changes or submitting a phase for acceptance. These are functional checks, not a
-capacity benchmark or a replacement for real Seed and Kubernetes validation.
+Run `make test-race` from the repository root after changing Go code. The unit
+tests cover deterministic objects, region/Range mapping, permutation, sharding,
+rate allocation, preparation responses/readiness and required input bindings.
+They use Go's standard testing package and require no Dragonfly cluster.
 
-With the preparation binaries, worker-support and the Dockerfile's k6 on PATH:
-
-```bash
-python3 tools/proxy-bench/fixed-pool/tests/integration.py --work-dir /tmp/fixed-pool-regression-new
-```
-
-The independent-process regression uses the same prerequisites and preserves
-two/three-worker request records, native results and fault cases:
-
-```bash
-python3 tools/proxy-bench/fixed-pool/tests/multi_worker.py --work-dir /tmp/fixed-pool-multi-new
-```
-
-It checks loops, uneven shards and integer rates, invalid input, interruption,
-missing summaries, dropped iterations and intentionally staggered starts. Test
-copies label requests with worker/iteration headers; production scripts do not.
-
-This retains normal, transparent transport resend, wrong-status, redirect, truncated-body, timeout, mixed,
-same-length wrong-body, dropped, dynamic-VU, interrupted, threshold-failed and
-script-abort runs, plus mismatched-input and incomplete-result cases. Numbering
-checks use an explicitly instrumented **test copy** with an iteration header;
-the production script has no per-request trace or iteration tag. The gap case
-pauses between acquiring an iteration number and incrementing the Counter.
-The controlled proxy implements preparation headers for protocol tests only;
-it is not a substitute for validation against a real Seed.
+Integration/E2E tests are maintained in
+[perf-tests-fixed-pool-tests](https://github.com/system-thoughts/perf-tests-fixed-pool-tests).
+They consume built images and matching deployment material. Its README lists the
+cases, prerequisites, execution commands and retained evidence. Run the relevant
+cases after changing the source bundle, preparation, worker or image dependencies;
+run the relevant full set before accepting a candidate. Controlled process tests
+observe real k6 requests and lifecycle behavior; Kubernetes cases use the images
+with a real source and Seed. These checks establish functionality, not capacity.

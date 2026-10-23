@@ -97,7 +97,7 @@ failure stages and reasons. It streams bodies without saving another copy.
 This does not certify an origin that was bypassed by an existing Seed cache.
 
 Maintainers verify the published source's GET/HEAD/Range behavior and deployment
-faults with [source regressions](../../tests/README.md#kubernetes-source-regression).
+faults with [source regressions](https://github.com/system-thoughts/perf-tests-fixed-pool-tests#kubernetes-cases).
 Benchmark users do not run these developer tests as a preparation step.
 
 ## Where the data goes

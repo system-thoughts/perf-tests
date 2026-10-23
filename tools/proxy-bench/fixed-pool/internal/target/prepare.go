@@ -202,34 +202,8 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 		}
 		runPhase(true)
 	}
-	result.Status = StatusReady
-	for i := range objects.Objects {
-		r := &objects.Objects[i]
-		if r.Status != StatusReady {
-			if r.Error == nil {
-				r.Error = &Issue{Code: Unverified, Stage: "target_prepare", Message: "not completed after cancellation or an earlier object failure", ObjectID: &r.ObjectID}
-			}
-			result.Errors = append(result.Errors, *r.Error)
-			if r.Status == StatusFailed {
-				result.Status = StatusFailed
-			} else if result.Status == StatusReady {
-				result.Status = StatusUnverified
-			}
-		}
-	}
-	if ctx.Err() != nil {
-		result.Errors = append(result.Errors, Issue{Code: "INTERRUPTED", Stage: "target_prepare", Message: ctx.Err().Error()})
-		if result.Status == StatusReady {
-			result.Status = StatusUnverified
-		}
-	}
+	err = summarize(ctx, &objects, &result)
 	result.EndedAt = timestamp()
-	if result.Status != StatusReady {
-		err = contract.Tag(Unverified, fmt.Errorf("target preparation is %s; inspect per-object evidence", result.Status))
-		if result.Status == StatusFailed {
-			err = contract.Tag(contract.PrepareFailed, fmt.Errorf("target preparation failed; inspect per-object evidence"))
-		}
-	}
 	data, encodeErr := contract.Encode(objects)
 	if encodeErr != nil {
 		return result, errors.Join(err, encodeErr)
@@ -268,4 +242,36 @@ func publish(directory, name, id string, data []byte) error {
 		return err
 	}
 	return contract.SyncDir(directory)
+}
+
+// summarize decides readiness from all object outcomes and cancellation.
+func summarize(ctx context.Context, objects *ObjectResults, result *Result) error {
+	result.Status = StatusReady
+	for i := range objects.Objects {
+		r := &objects.Objects[i]
+		if r.Status != StatusReady {
+			if r.Error == nil {
+				r.Error = &Issue{Code: Unverified, Stage: "target_prepare", Message: "not completed after cancellation or an earlier object failure", ObjectID: &r.ObjectID}
+			}
+			result.Errors = append(result.Errors, *r.Error)
+			if r.Status == StatusFailed {
+				result.Status = StatusFailed
+			} else if result.Status == StatusReady {
+				result.Status = StatusUnverified
+			}
+		}
+	}
+	if ctx.Err() != nil {
+		result.Errors = append(result.Errors, Issue{Code: "INTERRUPTED", Stage: "target_prepare", Message: ctx.Err().Error()})
+		if result.Status == StatusReady {
+			result.Status = StatusUnverified
+		}
+	}
+	if result.Status != StatusReady {
+		if result.Status == StatusFailed {
+			return contract.Tag(contract.PrepareFailed, fmt.Errorf("target preparation failed; inspect per-object evidence"))
+		}
+		return contract.Tag(Unverified, fmt.Errorf("target preparation is %s; inspect per-object evidence", result.Status))
+	}
+	return nil
 }

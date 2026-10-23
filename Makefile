@@ -182,15 +182,6 @@ build-proxy-bench-tools:
 	done
 .PHONY: build-proxy-bench-tools
 
-# Run controlled functional regressions; WORK_DIR must be a new artifact directory.
-test-proxy-bench-fixed-pool:
-	@test -n "$(WORK_DIR)" || { echo "Set WORK_DIR to a new artifact directory" >&2; exit 2; }
-	@test ! -e "$(WORK_DIR)" || { echo "WORK_DIR already exists; keep it and choose a new directory" >&2; exit 2; }
-	mkdir -p "$(WORK_DIR)"
-	python3 tools/proxy-bench/fixed-pool/tests/integration.py --work-dir "$(WORK_DIR)/single"
-	python3 tools/proxy-bench/fixed-pool/tests/multi_worker.py --work-dir "$(WORK_DIR)/multi"
-.PHONY: test-proxy-bench-fixed-pool
-
 docker-build-proxy-bench-tools: build-proxy-bench-tools
 	docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=bin/proxy-bench-tools-image.tar -t $(D7Y_REGISTRY)/proxy-bench-tools:latest -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
 .PHONY: docker-build-proxy-bench-tools
@@ -226,7 +217,6 @@ clean:
 .PHONY: clean
 
 help: 
-	@echo "make test-proxy-bench-fixed-pool WORK_DIR=... run controlled single/multi-worker regressions"
 	@echo "make build-proxy-bench-worker-support       build the internal worker helper"
 	@echo "make build-proxy-bench-seed-cache-prepare   build the fixed-pool Seed preparation command"
 	@echo "make build-proxy-bench-tools                build amd64/arm64 preparation and worker binaries"

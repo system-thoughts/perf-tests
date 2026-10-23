@@ -10,8 +10,8 @@ dataset, and runs independent k6 workers with per-worker reports. Its guide cove
 building, HTTP source deployment, configuration, execution and result handling.
 The existing proxy-bench repeat, random and sequential modes remain available.
 
-Maintainers can run the [controlled functional regressions](tools/proxy-bench/fixed-pool/tests/README.md)
-without a Dragonfly cluster. They validate tool behavior, not performance capacity.
+Maintainers run Go unit tests with `make test-race`. Additional integration checks
+are maintained in [the fixed-pool regression repository](https://github.com/system-thoughts/perf-tests-fixed-pool-tests).
 
 ## Usage
 

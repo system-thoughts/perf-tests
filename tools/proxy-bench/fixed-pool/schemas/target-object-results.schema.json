@@ -76,6 +76,7 @@
             ]
           },
           "finished_check_at": {
+            "description": "UTC time of this tool's successful Range check, not the Seed task completion time.",
             "anyOf": [
               {
                 "type": "string",

@@ -21,12 +21,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/contract"
@@ -35,7 +38,6 @@ import (
 
 const taskHeader = "X-Dragonfly-Task-ID"
 const serverHeader = "X-Dragonfly-Server-IP"
-const finishedHeader = "X-Dragonfly-Task-Download-Finished"
 
 // FixedHeaders is shared with later execution input generation; explicit proxy
 // selection and a fixed identity prevent environment-dependent bypasses.
@@ -56,7 +58,7 @@ func newClient(c Config) (*http.Client, *http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(proxy)
 	transport.DisableCompression = true
-	// Avoid implicit transport retries on reused connections: every probe is issued once.
+	// Keep retries explicit and bounded; do not transparently repeat full GETs.
 	transport.DisableKeepAlives = true
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	return client, transport, nil
@@ -144,50 +146,98 @@ func readFullResponse(ctx context.Context, resp *http.Response, c Config, o cont
 	return nil
 }
 
-func finishedCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult) error {
+func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult, stage string) error {
+	// All attempts, body reads and backoffs share one budget. A slow first
+	// request must not multiply the configured timeout by the attempt count.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Prepare.ReadyTimeoutMS)*time.Millisecond)
+	defer cancel()
+	delays := [...]time.Duration{100 * time.Millisecond, 500 * time.Millisecond}
+	for attempt := 1; ; attempt++ {
+		r.FinishedCheckAt = nil
+		if err := ctx.Err(); err != nil {
+			return contract.Tag(Unverified, err)
+		}
+		err := rangeCheckOnce(ctx, client, c, o, r)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("%s object=%d succeeded after %d attempts", stage, o.ID, attempt)
+			}
+			return nil
+		}
+		r.FinishedCheckAt = nil
+		log.Printf("%s object=%d attempt=%d/3 failed: %v", stage, o.ID, attempt, err)
+		if ctx.Err() != nil || attempt > len(delays) || !retryableRangeError(err) {
+			return fmt.Errorf("range check stopped after %d attempts: %w", attempt, err)
+		}
+		log.Printf("%s object=%d retrying in %s", stage, o.ID, delays[attempt-1])
+		timer := time.NewTimer(delays[attempt-1])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return contract.Tag(Unverified, fmt.Errorf("range check stopped after %d attempts (%v): %w", attempt, err, ctx.Err()))
+		case <-timer.C:
+		}
+	}
+}
+
+// Outcome categories are not retry policies. Only an unverified transport
+// failure is recoverable; status, identity and data errors stay terminal.
+func retryableRangeError(err error) bool {
+	if contract.ErrorCode(err) != Unverified {
+		return false
+	}
+	var networkError net.Error
+	return (errors.As(err, &networkError) && networkError.Timeout()) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
+}
+
+func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult) error {
 	resp, cancel, err := request(ctx, client, c, o, true)
 	defer cancel()
 	if err != nil {
-		return contract.Tag(Unverified, fmt.Errorf("finished check: %w", err))
+		return contract.Tag(Unverified, fmt.Errorf("range check: %w", err))
 	}
 	err = readProbe(ctx, resp, c, o, r)
 	closeErr := resp.Body.Close()
 	if err == nil {
-		err = closeErr
+		err = contract.Tag(Unverified, closeErr)
 	}
 	return err
 }
 
 func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Object, r *ObjectResult) error {
 	if resp.StatusCode != http.StatusPartialContent {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("finished check requires HTTP 206, got %d", resp.StatusCode))
+		return contract.Tag(contract.PrepareFailed, fmt.Errorf("range check requires HTTP 206, got %d", resp.StatusCode))
 	}
 	task, _, err := responseIdentity(resp, c)
 	if err != nil {
 		return err
 	}
 	if r.TaskID == nil || task != *r.TaskID {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d: task identity changed during finished check", resp.StatusCode))
+		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d: task identity changed during range check", resp.StatusCode))
 	}
 	size := min(uint64(65536), o.Size)
 	want := "bytes 0-" + strconv.FormatUint(size-1, 10) + "/" + strconv.FormatUint(o.Size, 10)
 	if len(resp.Header.Values("Content-Range")) != 1 || resp.Header.Get("Content-Range") != want || resp.ContentLength != int64(size) {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d finished check Content-Range/length mismatch: %q, %d", resp.StatusCode, resp.Header.Get("Content-Range"), resp.ContentLength))
+		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d range check Content-Range/length mismatch: %q, %d", resp.StatusCode, resp.Header.Get("Content-Range"), resp.ContentLength))
 	}
-	// This header describes task state at request start, not response completion.
-	if len(resp.Header.Values(finishedHeader)) != 1 || resp.Header.Get(finishedHeader) != headerTrue {
-		return contract.Tag(Unverified, fmt.Errorf("HTTP %d finished check has no unambiguous true completion marker; no retry or repair attempted", resp.StatusCode))
-	}
+	// Readiness is established by the full object and Range bytes, not the
+	// task's asynchronous completion state sampled before this response.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(size)+1))
 	if err != nil {
 		return contract.Tag(Unverified, err)
 	}
 	var expected bytes.Buffer
 	if err := dataset.Generate(ctx, &expected, o.ID, size); err != nil {
-		return err
+		return contract.Tag(Unverified, err)
 	}
 	if !bytes.Equal(body, expected.Bytes()) {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d finished check deterministic bytes mismatch", resp.StatusCode))
+		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d range check deterministic bytes mismatch", resp.StatusCode))
+	}
+	if err := ctx.Err(); err != nil {
+		return contract.Tag(Unverified, err)
 	}
 	now := timestamp()
 	r.FinishedCheckAt = &now

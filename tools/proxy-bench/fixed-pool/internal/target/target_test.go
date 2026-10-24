@@ -20,16 +20,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/contract"
 )
+
+const finishedHeader = "X-Dragonfly-Task-Download-Finished"
 
 func response(status int, body []byte) *http.Response {
 	resp := &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}
@@ -76,7 +81,7 @@ func TestFullResponseIntegrity(t *testing.T) {
 	}
 }
 
-func TestFinishedResponseRequiresIdentityMarkerAndRange(t *testing.T) {
+func TestRangeResponseIntegrity(t *testing.T) {
 	// Known object-zero prefix; generation itself is tested in dataset.
 	body, err := hex.DecodeString("4a8d6296")
 	if err != nil {
@@ -84,12 +89,16 @@ func TestFinishedResponseRequiresIdentityMarkerAndRange(t *testing.T) {
 	}
 	object := contract.Object{ID: 0, Size: 4}
 	config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}}
-	for _, name := range []string{"valid", "status", "task", "range", "length", "marker", "ambiguous-marker", "bytes"} {
+	for _, name := range []string{"valid", "missing-marker", "false-marker", "ambiguous-marker", "status", "task", "range", "length", "bytes", "bytes-without-marker", "cancelled"} {
 		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			resp := response(http.StatusPartialContent, body)
 			resp.Header.Set("Content-Range", "bytes 0-3/4")
 			resp.Header.Set(finishedHeader, headerTrue)
 			switch name {
+			case "cancelled":
+				cancel()
 			case "status":
 				resp.StatusCode = http.StatusOK
 			case "task":
@@ -98,22 +107,33 @@ func TestFinishedResponseRequiresIdentityMarkerAndRange(t *testing.T) {
 				resp.Header.Set("Content-Range", "bytes 1-4/4")
 			case "length":
 				resp.ContentLength = 3
-			case "marker":
+			case "missing-marker":
+				resp.Header.Del(finishedHeader)
+			case "false-marker":
 				resp.Header.Set(finishedHeader, headerFalse)
 			case "ambiguous-marker":
 				resp.Header.Add(finishedHeader, headerTrue)
+			case "bytes-without-marker":
+				resp.Header.Del(finishedHeader)
+				fallthrough
 			case "bytes":
 				resp.Body = io.NopCloser(strings.NewReader("xxxx"))
 			}
 			task := "object-task"
 			result := ObjectResult{TaskID: &task}
-			err := readProbe(context.Background(), resp, config, object, &result)
-			if name == "valid" {
+			err := readProbe(ctx, resp, config, object, &result)
+			if name == "valid" || name == "missing-marker" || name == "false-marker" || name == "ambiguous-marker" {
 				if err != nil || result.FinishedCheckAt == nil {
 					t.Fatalf("%+v %v", result, err)
 				}
 			} else if err == nil || result.FinishedCheckAt != nil {
 				t.Fatalf("invalid completion accepted: %+v %v", result, err)
+			}
+			if name == "bytes-without-marker" && contract.ErrorCode(err) != contract.PrepareFailed {
+				t.Fatalf("body mismatch must remain a data failure, got %v", err)
+			}
+			if name == "cancelled" && contract.ErrorCode(err) != Unverified {
+				t.Fatalf("interrupted verification is not a content failure: %v", err)
 			}
 		})
 	}
@@ -150,6 +170,90 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 		})
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRangeTransportRecovery(t *testing.T) {
+	const (
+		budgetName = "budget"
+		truncated  = "body-truncated-once"
+		backoff    = "cancel-backoff"
+		reset      = "reset-once"
+		persistent = "persistent-reset"
+		cancelled  = "cancelled"
+	)
+	for _, name := range []string{reset, truncated, persistent, budgetName, cancelled, backoff, "status", "identity", "range", "bytes", "unsupported", "permanent-transport"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}, Prepare: Options{ReadyTimeoutMS: 2000}}
+			if name == budgetName {
+				config.Prepare.ReadyTimeoutMS = 20
+			}
+			attempts, wantAttempts := 0, 1
+			switch name {
+			case reset, truncated:
+				wantAttempts = 2
+			case persistent:
+				wantAttempts = 3
+			}
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				if req.Header.Get("Range") != "bytes=0-3" {
+					t.Fatalf("recovery changed the request: %v", req.Header)
+				}
+				if name == cancelled {
+					cancel()
+				}
+				if name == backoff {
+					time.AfterFunc(10*time.Millisecond, cancel)
+				}
+				if name == persistent || name == budgetName || name == cancelled || name == backoff || (name == reset && attempts == 1) {
+					return nil, syscall.ECONNRESET
+				}
+				if name == "permanent-transport" {
+					return nil, errors.New("unsupported transport configuration")
+				}
+				resp := response(http.StatusPartialContent, []byte{0x4a, 0x8d, 0x62, 0x96})
+				resp.Header.Set("Content-Range", "bytes 0-3/4")
+				switch name {
+				case truncated:
+					if attempts == 1 {
+						resp.Body = io.NopCloser(errorReader{})
+					}
+				case "status":
+					resp.StatusCode = http.StatusServiceUnavailable
+				case "identity":
+					resp.Header.Set(taskHeader, "another-task")
+				case "range":
+					resp.Header.Set("Content-Range", "bytes 1-4/4")
+				case "bytes":
+					resp.Body = io.NopCloser(strings.NewReader("xxxx"))
+				case "unsupported":
+					resp.Header.Del(taskHeader)
+				}
+				return resp, nil
+			})}
+			task := "object-task"
+			result := ObjectResult{TaskID: &task}
+			started := time.Now()
+			err := rangeCheck(ctx, client, config, contract.Object{ID: 0, Size: 4, URL: "http://object.test/0"}, &result, "range_check")
+			success := name == reset || name == truncated
+			if attempts != wantAttempts || (err == nil) != success || (result.FinishedCheckAt != nil) != success {
+				t.Fatalf("attempts=%d want=%d result=%+v err=%v", attempts, wantAttempts, result, err)
+			}
+			if (name == budgetName || name == cancelled || name == backoff) && time.Since(started) > 500*time.Millisecond {
+				t.Fatal("cancellation or shared budget did not interrupt retry backoff")
+			}
+		})
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 	dir := t.TempDir()

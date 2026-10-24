@@ -42,9 +42,10 @@ type ObjectResult struct {
 	ReceivedBytes       *uint64 `json:"received_bytes"`
 	SHA256              *string `json:"sha256"`
 	FullReadCompletedAt *string `json:"full_read_completed_at"`
-	FinishedCheckAt     *string `json:"finished_check_at"`
-	Status              string  `json:"status"`
-	Error               *Issue  `json:"error"`
+	// Historical field name: successful local Range check time, not task.finished_at.
+	FinishedCheckAt *string `json:"finished_check_at"`
+	Status          string  `json:"status"`
+	Error           *Issue  `json:"error"`
 }
 
 type ObjectResults struct {
@@ -132,12 +133,12 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	runPhase := func(final bool) {
 		var wait sync.WaitGroup
 		next := 0
-		stopped := false
+		var stopCause *Issue
 		for range min(c.Prepare.Concurrency, m.ObjectCount) {
 			wait.Go(func() {
 				for {
 					mu.Lock()
-					if stopped || ctx.Err() != nil || next >= len(m.Objects) {
+					if stopCause != nil || ctx.Err() != nil || next >= len(m.Objects) {
 						mu.Unlock()
 						return
 					}
@@ -161,12 +162,12 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 						}
 					}
 					if failure == nil {
-						stage = "finished_check"
+						stage = "range_check"
 						if final {
 							stage = "final_check"
 							r.FinishedCheckAt = nil
 						}
-						failure = finishedCheck(ctx, client, c, o, r)
+						failure = rangeCheck(ctx, client, c, o, r, stage)
 					}
 					mu.Lock()
 					if failure != nil {
@@ -176,7 +177,9 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 							r.Status = StatusUnverified
 						}
 						r.Error = &Issue{Code: code, Stage: stage, Message: failure.Error(), ObjectID: &r.ObjectID}
-						stopped = true
+						if stopCause == nil {
+							stopCause = r.Error
+						}
 					} else {
 						r.Status = StatusReady
 					}
@@ -185,6 +188,20 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 			})
 		}
 		wait.Wait()
+		// These objects had no request in this phase. Do not present them as
+		// additional HTTP failures or obscure which object stopped dispatch.
+		stage := "full_get"
+		if final {
+			stage = "final_check"
+		}
+		for index := next; index < len(m.Objects); index++ {
+			r := &objects.Objects[index]
+			message := fmt.Sprintf("not dispatched for %s: preparation cancelled: %v", stage, ctx.Err())
+			if ctx.Err() == nil && stopCause != nil {
+				message = fmt.Sprintf("not dispatched for %s: object %d failed at %s (%s)", stage, *stopCause.ObjectID, stopCause.Stage, stopCause.Code)
+			}
+			r.Error = &Issue{Code: Unverified, Stage: "target_prepare", Message: message, ObjectID: &r.ObjectID}
+		}
 	}
 	runPhase(false)
 	allReady := func() bool {

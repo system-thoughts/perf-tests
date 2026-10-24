@@ -336,7 +336,7 @@ After publishing the source, copy
 [the target configuration](examples/target-config.yaml), fill the actual proxy,
 expected server IP and observed instance reference. No Client version is
 requested or used for admission. Preparation checks actual response identity,
-body and completion evidence; record software versions separately in experiment
+body and Range evidence; record software versions separately in experiment
 notes when comparing results. Earlier candidate configurations containing
 `client_version` must drop that input and generate a new preparation record in
 a new directory. Keep historical ready records unchanged.
@@ -364,22 +364,39 @@ settings, disables redirects/decompression and connection-reuse retries, sends
 fixed URL identity headers and prefetch=false, and never supplies a piece length.
 Each object requires a complete 200 response with exact length/SHA, matching
 Dragonfly task/server identity, and a deterministic 206 prefix probe with the
-same task and a true download-finished marker. After all full reads, a second
-pool-wide probe pass checks completion again. Each probe is attempted once;
-missing completion evidence is not repaired by polling or downloading more.
-The true marker describes state at request start and cannot replace full-body
-verification. Different objects must not unexpectedly share a task.
-A task finished timestamp can also be set by a Range-only download while other
-pieces are still missing. Integration validation must inspect actual piece
-coverage; the timestamp does not replace complete-object verification.
+same task. After all full reads, a second pool-wide pass checks every object's
+Range response again. Neither pass polls task state or repeats the full-object download.
+Different objects must not unexpectedly share a task.
 
-The command streams bodies without saving a second copy. On failure it stops
-new object dispatch and lets already started requests finish within their
-configured timeouts; interruption cancels current requests. Retry explicitly
-with a new output directory/preparation ID; cached Seed data is not deleted.
+Ready means verified cache data, not completion of the original request's internal
+bookkeeping. `X-Dragonfly-Task-Download-Finished` snapshots state at request start;
+it can be absent after the full body has arrived and is not a readiness gate.
+A Range-only download can also set task.finished_at while other pieces are missing.
+Neither marker replaces full-object verification or proves background activity ended.
+
+The command streams bodies without saving a second copy. A recoverable Range
+transport failure (such as a reset connection or truncated response) gets at
+most three attempts, including the first, with 100 ms and 500 ms backoffs.
+Each Range check shares one `ready_timeout_ms` budget across requests, body
+reads and backoffs; the default is 60 seconds total, not per attempt. A request
+that consumes that budget gets no further attempt. The same URL, Range, task
+and target checks apply on every attempt. Other preparation workers continue
+while one worker retries. Attempt failures and recovery are written to stderr.
+HTTP status, identity, range and content errors are terminal. Full GETs are
+never automatically retried.
+
+After a terminal failure or exhausted Range recovery, stop new object dispatch
+and let already started requests finish within their configured timeouts.
+Evidence distinguishes the actual failing object from objects not dispatched
+because of that failure. Interruption cancels requests and backoff waits.
+Retry the command explicitly with a new output directory/preparation ID;
+cached Seed data is not deleted. Preparation retries do not change the worker's
+no-business-retry measurement policy.
 
 `target-object-results.json` contains every object, known task/IP/received bytes,
-actual digest and timestamps, status and reason. Unknown fields are null.
+actual digest and timestamps, status and reason. The historical field
+`finished_check_at` records this tool's successful Range check, not the Seed's
+task completion time. Unknown fields are null.
 `target-preparation.json` is published last and binds the exact manifest digest,
 fixed identity/rules digest, target, method, effective prepare options and the
 object evidence file digest. Stdout has the same preparation record (including
@@ -392,8 +409,15 @@ than overwriting it.
 The worker consumes a ready preparation summary by checking dataset/target/identity
 bindings, status, object count and evidence-file digest. It streams that digest;
 it does not parse every saved object result or repeat body verification. Keep the
-summary and referenced evidence unchanged. Full body and completion checks belong
-to `proxy-bench-seed-cache-prepare`; regressions protect that producer behavior.
+summary and referenced evidence unchanged. The historical method identifier
+`http-full-body-and-finished-v1` is retained for compatibility; it does not
+require a task-finished header. Record the tools image digest/source revision
+to identify the implementation. The record shape and worker method check are
+unchanged, so this fix does not require a paired worker upgrade. Existing ready
+records remain usable when their bindings and target conditions remain valid.
+Failed/unverified records cannot be promoted or edited into ready. Full body
+and Range checks belong to `proxy-bench-seed-cache-prepare`; regressions protect
+that producer behavior.
 
 These records prove the preparation-end condition only. Operators must verify
 the actual automatic piece length and Range alignment on first integration or

@@ -39,9 +39,10 @@ const (
 	StatusUnverified = "unverified"
 	headerFalse      = "false"
 	headerTrue       = "true"
-	Method           = "http-full-body-and-finished-v1"
-	Unsupported      = "TARGET_UNSUPPORTED"
-	Unverified       = "TARGET_UNVERIFIED"
+	// Historical compatibility identifier; readiness is defined by data checks.
+	Method      = "http-full-body-and-finished-v1"
+	Unsupported = "TARGET_UNSUPPORTED"
+	Unverified  = "TARGET_UNVERIFIED"
 )
 
 type Target struct {

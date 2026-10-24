@@ -42,8 +42,6 @@ spec:
               value: run-001
             - name: WORKER_ID
               value: "0"
-            - name: RESULT_DIR
-              value: /results
           resources:
             requests:
               cpu: "1"
@@ -53,18 +51,19 @@ spec:
               memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: inputs
               mountPath: /inputs
               readOnly: true
-            - name: results
-              mountPath: /results
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: inputs
           persistentVolumeClaim:
             claimName: fixed-pool-inputs
             readOnly: true
-        - name: results
-          emptyDir: {}

@@ -34,9 +34,9 @@ import (
 )
 
 type Environment struct {
-	Manifest, Plan, Preparation, TargetConfig, Proxy, RunID, ResultDir string
-	WorkerID, Rate, PreAllocatedVUs, MaxVUs                            uint64
-	Duration, Timeout, GracefulStop                                    time.Duration
+	Manifest, Plan, Preparation, TargetConfig, Proxy, RunID string
+	WorkerID, Rate, PreAllocatedVUs, MaxVUs                 uint64
+	Duration, Timeout, GracefulStop                         time.Duration
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -64,16 +64,6 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	e.RunID = values["RUN_ID"]
 	if !identifier.MatchString(e.RunID) {
 		return e, fmt.Errorf("RUN_ID must be 1..128 ASCII letters/digits/._-, starting with a letter or digit")
-	}
-	if value, exists := values["RESULT_DIR"]; exists && value == "" {
-		return e, fmt.Errorf("RESULT_DIR must not be empty")
-	}
-	e.ResultDir = values["RESULT_DIR"]
-	if e.ResultDir == "" {
-		e.ResultDir = "/results"
-	}
-	if e.ResultDir, err = filepath.Abs(e.ResultDir); err != nil {
-		return e, err
 	}
 	integer := func(key string, fallback, minValue, maxValue uint64) uint64 {
 		if err != nil {
@@ -122,7 +112,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	return e, err
 }
 
-func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.Writer) error {
+func PrepareInput(ctx context.Context, e Environment, scripts, output string, stdout io.Writer) error {
 	started := time.Now()
 	m, manifestRaw, err := contract.ReadManifest(e.Manifest)
 	if err != nil {
@@ -156,12 +146,18 @@ func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.
 		return contract.Tag(contract.InputInvalid, err)
 	}
 	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version()}
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
+	for name, label := range map[string]string{
+		"benchmark.js":      "benchmark.js",
+		"run-benchmark.sh":  "run-benchmark.sh",
+		"lib/plan.js":       "lib/plan.js",
+		"lib/summary.js":    "lib/summary.js",
+		"../lib/summary.js": "shared_lib_summary.js",
+	} {
 		raw, err := os.ReadFile(filepath.Join(scripts, name))
 		if err != nil {
 			return err
 		}
-		versions[name+"_sha256"] = contract.Digest(raw)
+		versions[label+"_sha256"] = contract.Digest(raw)
 	}
 	configRaw, err := os.ReadFile(e.TargetConfig)
 	if err != nil {
@@ -186,13 +182,13 @@ func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.
 		return err
 	}
 	spec := Spec{SchemaVersion: 1, RunID: e.RunID, WorkerID: e.WorkerID, PlanID: run.Plan.SHA256, ManifestID: manifestID, ObjectsFile: objects, Shard: shard, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: e.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: run.DurationMS, TimeoutMS: run.TimeoutMS, GracefulStopMS: run.GracefulStopMS, PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
-	if err = claim(e.ResultDir); err != nil {
+	// This file is private to one invocation. It is consumed only after the
+	// helper succeeds; it is neither a published result nor a reusable input.
+	raw, err := contract.Encode(spec)
+	if err != nil {
 		return err
 	}
-	if err = Publish(e.ResultDir, "run-spec.json", run); err != nil {
-		return err
-	}
-	if err = Publish(e.ResultDir, "worker-spec.json", spec); err != nil {
+	if err = os.WriteFile(output, raw, 0600); err != nil {
 		return err
 	}
 	if err = Emit(stdout, "RUN_SPEC", run); err != nil {
@@ -204,29 +200,12 @@ func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.
 	_, err = fmt.Fprintf(stdout, "Input checks complete: regions=%d shard_regions=%d objects=%d elapsed_ms=%d\n", p.RegionCount, spec.RegionCount, m.ObjectCount, time.Since(started).Milliseconds())
 	return err
 }
-func claim(directory string) error {
-	info, err := os.Stat(directory)
-	if err == nil && !info.IsDir() {
-		return contract.Tag(contract.DataConflict, fmt.Errorf("RESULT_DIR already exists and is not a directory"))
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.MkdirAll(directory, 0755); err != nil {
-		return err
-	}
-	if err := os.Mkdir(filepath.Join(directory, ".worker-claim"), 0700); err != nil {
-		if os.IsExist(err) {
-			return contract.Tag(contract.DataConflict, err)
-		}
-		return err
-	}
-	entries, err := os.ReadDir(directory)
+
+func Emit(w io.Writer, kind string, value any) error {
+	raw, err := contract.Encode(value)
 	if err != nil {
 		return err
 	}
-	if len(entries) != 1 {
-		return contract.Tag(contract.DataConflict, fmt.Errorf("RESULT_DIR must be empty; existing results are never overwritten"))
-	}
-	return nil
+	_, err = fmt.Fprintf(w, "%s%s_V1 %s", Prefix, kind, raw)
+	return err
 }

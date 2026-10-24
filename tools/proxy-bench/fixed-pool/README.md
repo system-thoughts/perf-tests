@@ -499,10 +499,10 @@ kubectl -n "$NAMESPACE" get job "$JOB_NAME"
 
 The Job checks the saved input relationships before running k6. It does not
 contact Seed for a new preparation check or create other Jobs. The template
-uses a read-only input PVC, writable result emptyDir, no service-account token,
-no elevated capabilities, no restart and no Job-level retry. Preserve the Job
-logs before deleting it; use a writable PVC instead of emptyDir if result files
-must survive Pod deletion.
+uses a read-only input PVC, no service-account token, no elevated capabilities,
+no restart and no Job-level retry. The container needs a writable temporary
+directory for its private k6 input; no result volume is mounted. Preserve the
+Job logs before deleting it.
 
 Each iteration calls `http.get` once, with no business-layer retry or redirect.
 Connection reuse remains enabled. The native k6/Go HTTP transport can transparently
@@ -525,7 +525,6 @@ observed at the proxy can differ.
 | TIMEOUT | 30s | Per-request timeout |
 | GRACEFUL_STOP | TIMEOUT + 5s | Engineering allowance; explicit value must exceed TIMEOUT |
 | PRE_ALLOCATED_VUS, MAX_VUS | 64, 512 | Existing proxy-bench starting points; max must cover preallocation |
-| RESULT_DIR | /results | Writable, initially empty; existing results are never overwritten |
 
 Durations must be positive and representable as whole milliseconds. DURATION must
 be at least 1s, as required by k6's constant-arrival-rate executor. An explicitly
@@ -537,53 +536,70 @@ exceptions still apply; choose a source hostname that routes through the Seed.
 The internal worker-support subcommands run automatically.
 
 k6 applies its native file, script, environment and CLI precedence. Testers own
-their local configuration and environment. `worker-spec.json` records benchmark
-script inputs, while `k6-summary.json.effective_options` captures k6's consolidated
+their local configuration and environment. `WORKER_SPEC_V1` records benchmark
+script inputs, while `K6_SUMMARY_V1.effective_options` captures k6's consolidated
 and derived test options once in handleSummary. Native null members are preserved;
 this snapshot is not a dump of all process settings. If the engine
 fails before handleSummary, no snapshot is available. External thresholds can
 make k6 exit nonzero; the worker preserves the engine failure and raw exit code.
-Multiple scenarios or an execution segment leave coverage unverified rather than
-being rejected. The original proxy-bench uses the same native configuration layers.
+Multiple scenarios or an execution segment prevent inferring exact coverage.
+The original proxy-bench uses the same native configuration layers.
 
 The runtime image selects its k6 dependency in [Dockerfile](../Dockerfile).
 Version selection is a build and maintainer-regression concern. The shipped worker
-never calls `k6 version` and does not require, record or compare k6 versions when
-preparing inputs or deriving results. New summaries omit `k6_version`; older
-summaries may contain it, and the reader ignores that metadata. `tool_versions`
-retains helper/Go and script identifiers, without a required k6 entry.
-Required native metrics and fields are still checked for result completeness.
-Dependency upgrades must pass the relevant external regressions using the delivered engine;
-API or summary changes can require adaptation. Runtime success alone does not
-establish compatibility of an untested engine.
+never probes, records or compares k6 versions. Dependency upgrades must pass the
+relevant external regressions using the delivered engine.
 
 ### Read the result
 
-The worker writes run-spec, worker-spec, k6-summary, worker-execution and
-worker-summary JSON files into RESULT_DIR. Logs contain each record once, using
-`PROXY_BENCH_FIXED_POOL_` followed by `RUN_SPEC_V1`, `WORKER_SPEC_V1`,
-`K6_SUMMARY_V1`, `WORKER_EXIT_V1` or `WORKER_RESULT_V1`, then a space and JSON.
-An input/output error may additionally use `ERROR_V1`. Schemas are in `schemas/`.
+Collect the Job log with `kubectl logs job/<job-name> > worker.log`. The shared
+proxy-bench report displays requests, failures, latency (including P90/P95/P99),
+and throughput in the same format as the original modes. The title identifies the
+mode. Consumed shows plan entries consumed and this worker's shard size; repeated
+accesses and subsequent HTTP failures can be included, so it is not unique or
+successful coverage. Without configured
+thresholds it displays NOT EVALUATED, not a passing verdict. The log also contains
+four JSON records, each prefixed with `PROXY_BENCH_FIXED_POOL_`:
 
-The readable metric rows and JSON use the same native k6 values. QPS includes
-failed requests; success means k6's expected status 206 with no transport failure.
-No request-body hash or per-request length check is added. Known failed requests
-still consume their plan positions. Only a complete normal execution with
-consistent counters establishes exact logical coverage. Interrupted or uncertain
-runs retain metrics and use null coverage with a reason.
+| Record | Contents |
+| --- | --- |
+| RUN_SPEC_V1 | Run identity, shared input references, target and rate allocation |
+| WORKER_SPEC_V1 | Worker ID, shard size, Range size and script inputs |
+| K6_SUMMARY_V1 | Effective options and the unmodified native summary |
+| WORKER_EXIT_V1 | Local start attempt/end times, raw child exit and termination reason |
 
-Exit 0 means the action produced its required results, not that capacity or
-service-quality criteria passed. Input errors exit 2, execution/publication
-failures 3, missing/invalid required results 4, and handled interruption 130;
-priority is 130, 2, 3, 4, 0. All errors and the raw k6 exit code are retained.
-The fixed-pool script has no built-in performance thresholds. SIGKILL, OOM or
-node loss can prevent final records; obtain Pod status separately.
+Input errors can also use `ERROR_V1`. No result directory, result volume or
+five-file archive is required. A small private k6 input is written under TMPDIR
+(default `/tmp`) and cleaned on exit. Both worker Job examples mount a temporary emptyDir at `/tmp`, so the private
+input also works with a read-only root filesystem, enabled by default in both
+examples. This is not a result volume.
+The temporary directory must be writable.
+SIGKILL/OOM can prevent cleanup or final log records; obtain Pod status separately.
+
+Read native `http_reqs` count/rate, `http_req_duration` percentiles,
+`http_req_failed`, `dropped_iterations`, `plan_consumed` and actual duration from
+`K6_SUMMARY_V1.native_summary`. There is no second metric model or completeness
+flag. Missing values retain their native representation; missing logs are not zero.
+QPS includes failures; expected status is 206, with no per-request body validation.
+
+For a normal exit with complete logs, one unsegmented fixed-pool scenario and
+matching plan_consumed/iterations/http_reqs counts, unique logical regions equal
+`min(plan_consumed.count, WORKER_SPEC_V1.region_count)`. Multiply by range_bytes
+for logical bytes; divide by region_count for this shard's ratio. Interrupted,
+segmented or inconsistent runs cannot establish exact coverage. Coverage does not
+prove successful bodies, cache residency or physical I/O.
+
+Before k6 starts, input errors exit 2 and internal I/O errors exit 3. After startup,
+the entry returns the native k6 code, including threshold failure 99 and command
+startup failures 126/127. A handled INT/TERM is forwarded to the child and returns
+130; the exit log retains the actual child code. Exit 0 does not establish log
+completeness, capacity or service quality. No performance thresholds are added.
 
 ## Run independent workers
 
 Prepare a plan with `--workers W`, then copy the existing Job template once per
-worker. Each Job must have a distinct name, `WORKER_ID` in `0..W-1`, a separate
-writable result volume, and the same RUN_ID, total RATE, DURATION, target and
+worker. Each Job must have a distinct name, `WORKER_ID` in `0..W-1`, a writable
+temporary directory, and the same RUN_ID, total RATE, DURATION, target and
 byte-identical common inputs. Keep `backoffLimit: 0` and `restartPolicy: Never`.
 Do not use Job parallelism to create copies with the default worker ID 0.
 
@@ -599,13 +615,10 @@ overlap as intended. Same RUN_ID and DURATION alone do not establish overlap.
 Missing, duplicate, mixed-run or truncated records must not be treated as a
 complete multi-worker experiment. A rerun uses a new RUN_ID for all workers.
 
-With W>1, top-level `aggregate` and `coverage` are null. Read this worker's
-values from `workers[0].metrics` and `workers[0].coverage`; its coverage ratio
-uses its own shard size. `result_complete` describes this worker only. Preserve
-each worker's native QPS, P99/P50, actual duration and exit facts. There is no
-cross-worker report or summarize command. An operator may choose a separate
-aggregation method; averaging per-worker percentiles does not yield an overall
-percentile, and a missing worker is not a zero-valued worker.
+Preserve each worker's native request rate, percentiles, duration and exit facts.
+There is no cross-worker report or summarize command. An operator may choose a
+separate aggregation method; averaging per-worker percentiles does not yield an
+overall percentile, and a missing worker is not a zero-valued worker.
 
 ## Maintainer tests
 

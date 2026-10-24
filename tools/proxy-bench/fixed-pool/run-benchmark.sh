@@ -2,11 +2,10 @@
 # Only manage this worker's child process. No Kubernetes API or remote control.
 set -u
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 3
-RESULT_DIR=${RESULT_DIR-/results}
-if [ -n "$RESULT_DIR" ]; then
-  case "$RESULT_DIR" in /*) ;; *) RESULT_DIR="$PWD/$RESULT_DIR" ;; esac
-fi
-export RESULT_DIR
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/proxy-bench-fixed-pool.XXXXXXXX") || exit 3
+trap 'rm -rf -- "$work_dir"' 0
+WORKER_SPEC=$work_dir/worker-spec.json
+export WORKER_SPEC
 interrupted=0
 child=''
 forward_signal() {
@@ -24,7 +23,7 @@ wait_child() {
   fi
 }
 trap forward_signal INT TERM
-proxy-bench-worker-support prepare-input --script-dir "$SCRIPT_DIR" &
+proxy-bench-worker-support prepare-input --script-dir "$SCRIPT_DIR" --output "$WORKER_SPEC" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child
@@ -48,12 +47,17 @@ wait_child
 k6_code=$child_code
 child=''
 ended_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+# ReadEnvironment already validated this decimal; normalize leading zeroes for JSON.
+worker_id=${WORKER_ID:-0}
+while [ "${worker_id#0}" != "$worker_id" ]; do worker_id=${worker_id#0}; done
+worker_id=${worker_id:-0}
 reason=completed
 [ "$k6_code" -eq 0 ] || reason=failed
 if [ "$k6_code" -eq 126 ] || [ "$k6_code" -eq 127 ]; then reason=start_failed; fi
 [ "$interrupted" -eq 0 ] || reason=interrupted
-proxy-bench-worker-support write-report --started-at "$started_at" --ended-at "$ended_at" \
-  --exit-code "$k6_code" --reason "$reason"
-report_code=$?
+# JSON strings below are validated identifiers, UTC timestamps or fixed enums.
+# Never interpolate free-form paths or error messages without a JSON encoder.
+printf 'PROXY_BENCH_FIXED_POOL_WORKER_EXIT_V1 {"run_id":"%s","worker_id":%s,"process_started_at":"%s","process_ended_at":"%s","exit_code":%s,"termination_reason":"%s"}\n' \
+  "$RUN_ID" "$worker_id" "$started_at" "$ended_at" "$k6_code" "$reason"
 [ "$interrupted" -eq 0 ] || exit 130
-exit "$report_code"
+exit "$k6_code"

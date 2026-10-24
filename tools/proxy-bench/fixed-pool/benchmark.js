@@ -4,10 +4,10 @@ import exec from 'k6/execution';
 import { SharedArray } from 'k6/data';
 import { Counter } from 'k6/metrics';
 import { regionRequest } from './lib/plan.js';
-import { summaryOutputs } from './lib/summary.js';
+import { summaryOutputs, summaryTrendStats } from './lib/summary.js';
 
 const loadedAt = Date.now();
-const spec = JSON.parse(open(`${__ENV.RESULT_DIR}/worker-spec.json`));
+const spec = JSON.parse(open(__ENV.WORKER_SPEC));
 const objects = new SharedArray('fixed-pool-objects', () => JSON.parse(open(spec.objects_file.path)));
 const shard = new SharedArray('fixed-pool-shard', () => JSON.parse(open(spec.shard.path)));
 if (shard.length !== spec.region_count) throw new Error('shard length mismatch');
@@ -27,7 +27,7 @@ export const options = {
   noConnectionReuse: false,
   noVUConnectionReuse: false,
   maxRedirects: 0,
-  summaryTrendStats: ['min', 'avg', 'med', 'p(95)', 'p(99)', 'max'],
+  summaryTrendStats,
 };
 
 export default function () {

@@ -24,12 +24,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/contract"
-	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/report"
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/worker"
 )
 
@@ -45,98 +42,40 @@ func inputError(ctx context.Context, stdout io.Writer, err error) int {
 	if !errors.As(err, &failure) {
 		code = "WORKER_FAILED"
 	}
-	issues := []worker.Issue{{Code: code, Stage: "input", Message: err.Error()}}
+	_ = worker.Emit(stdout, "ERROR", []worker.Issue{{Code: code, Stage: "input", Message: err.Error()}})
 	if ctx.Err() != nil {
-		issues = append(issues, worker.Issue{Code: "INTERRUPTED", Stage: "input", Message: ctx.Err().Error()})
+		return 130
 	}
-	if err := worker.Emit(stdout, "ERROR", issues); err != nil {
-		issues = append(issues, worker.Issue{Code: "WORKER_FAILED", Stage: "publish", Message: err.Error()})
+	switch code {
+	case contract.InputInvalid, contract.ContractMismatch, contract.BudgetExceeded, contract.DataConflict:
+		return 2
+	default:
+		return 3
 	}
-	return worker.ExitCode(issues)
 }
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("internal subcommand required: prepare-input or write-report")))
+	if len(args) == 0 || args[0] != "prepare-input" {
+		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("internal subcommand required: prepare-input")))
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	var scriptDir, started, ended, reason string
-	var code int
-	switch args[0] {
-	case "prepare-input":
-		flags.StringVar(&scriptDir, "script-dir", "/home/k6/fixed-pool", "internal: directory containing the executed workload")
-	case "write-report":
-		flags.StringVar(&started, "started-at", "", "internal: local child start UTC RFC3339")
-		flags.StringVar(&ended, "ended-at", "", "internal: local child end UTC RFC3339")
-		flags.StringVar(&reason, "reason", "", "internal: completed, failed, interrupted or start_failed")
-		flags.IntVar(&code, "exit-code", -1, "internal: raw child exit code")
-	default:
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unsupported internal subcommand")))
-	}
+	scripts := flags.String("script-dir", "/home/k6/fixed-pool", "internal: directory containing the executed workload")
+	output := flags.String("output", "", "internal: temporary k6 input file")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, err))
 	}
-	if flags.NArg() != 0 {
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected positional arguments")))
+	if flags.NArg() != 0 || *output == "" {
+		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("output file required; positional arguments are unsupported")))
 	}
-	if args[0] == "prepare-input" {
-		env, err := worker.ReadEnvironment(os.Environ())
-		if err != nil {
-			return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, err))
-		}
-		if err = worker.PrepareInput(ctx, env, scriptDir, stdout); err != nil {
-			return inputError(ctx, stdout, err)
-		}
-		return 0
-	}
-	directory := os.Getenv("RESULT_DIR")
-	if directory == "" {
-		directory = "/results"
-	}
-	_, spec, err := worker.ReadSpec(directory)
+	env, err := worker.ReadEnvironment(os.Environ())
 	if err != nil {
-		return inputError(ctx, stdout, contract.Tag(contract.ContractMismatch, err))
+		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, err))
 	}
-	for _, timestamp := range []string{started, ended} {
-		if _, err = time.Parse(time.RFC3339Nano, timestamp); err != nil {
-			return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("invalid local execution timestamp")))
-		}
+	if err = worker.PrepareInput(ctx, env, *scripts, *output, stdout); err != nil {
+		return inputError(ctx, stdout, err)
 	}
-	if code < 0 || code > 255 {
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("raw exit code outside [0,255]")))
-	}
-	if reason != worker.Completed && reason != worker.Failed && reason != worker.Interrupted && reason != worker.StartFailed {
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unknown termination reason")))
-	}
-	pending := filepath.Join(directory, ".k6-summary.json.pending")
-	final := filepath.Join(directory, "k6-summary.json")
-	var publishError error
-	if _, err := os.Stat(pending); err == nil {
-		publishError = os.Link(pending, final)
-		if publishError == nil {
-			publishError = errors.Join(os.Remove(pending), contract.SyncDir(directory))
-		}
-	} else if !os.IsNotExist(err) {
-		publishError = err
-	}
-	_, statErr := os.Stat(final)
-	execution := worker.Execution{SchemaVersion: 1, RunID: spec.RunID, WorkerID: spec.WorkerID, ProcessStartedAt: &started, ProcessEndedAt: &ended, ExitCode: &code, TerminationReason: reason, SummaryPresent: statErr == nil, Errors: []worker.Issue{}}
-	if publishError != nil {
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "WORKER_FAILED", Stage: "publish", Message: publishError.Error(), WorkerID: &spec.WorkerID})
-	}
-	switch {
-	case reason == worker.Interrupted || code == 105 || code == 130 || ctx.Err() != nil:
-		execution.TerminationReason = worker.Interrupted
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "INTERRUPTED", Stage: "execution", Message: "local worker interrupted", WorkerID: &spec.WorkerID})
-	case reason == worker.StartFailed:
-		execution.ProcessStartedAt = nil
-		execution.ExitCode = nil
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "START_FAILED", Stage: "execution", Message: "k6 child could not start", WorkerID: &spec.WorkerID})
-	case code != 0 || reason == worker.Failed:
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "WORKER_FAILED", Stage: "execution", Message: fmt.Sprintf("k6 exited with code %d", code), WorkerID: &spec.WorkerID})
-	}
-	return report.Write(directory, execution, stdout)
+	return 0
 }

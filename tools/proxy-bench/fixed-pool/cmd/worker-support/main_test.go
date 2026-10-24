@@ -36,16 +36,20 @@ func TestInternalInterfaceRejectsUnknownArguments(t *testing.T) {
 			t.Fatalf("%v code=%d out=%s", args, got, out.String())
 		}
 	}
-	for _, name := range []string{"prepare-input", "write-report"} {
+	for _, name := range []string{"prepare-input"} {
 		if got := run(context.Background(), []string{name, "--help"}, io.Discard, io.Discard); got != 0 {
 			t.Fatal(got)
 		}
 	}
 }
-func TestInputAndPublicationErrorPriorities(t *testing.T) {
+func TestInputErrorClassification(t *testing.T) {
 	err := contract.Tag(contract.ContractMismatch, errors.New("input mismatch"))
 	if got := inputError(context.Background(), brokenWriter{}, err); got != 2 {
 		t.Fatal(got)
+	}
+	unsupported := contract.Tag("TARGET_UNSUPPORTED", errors.New("unsupported proxy rules"))
+	if got := inputError(context.Background(), io.Discard, unsupported); got != 3 {
+		t.Fatalf("unsupported target must preserve operational exit 3, got %d", got)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

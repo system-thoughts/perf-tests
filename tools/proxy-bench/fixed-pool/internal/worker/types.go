@@ -21,14 +21,6 @@ import (
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/target"
 )
 
-const (
-	Completed   = "completed"
-	Failed      = "failed"
-	Interrupted = "interrupted"
-	StartFailed = "start_failed"
-	Unknown     = "unknown"
-)
-
 const Prefix = "PROXY_BENCH_FIXED_POOL_"
 
 type Issue struct {
@@ -79,15 +71,4 @@ type Spec struct {
 	GracefulStopMS   int64             `json:"graceful_stop_ms"`
 	PreAllocatedVUs  uint64            `json:"pre_allocated_vus"`
 	MaxVUs           uint64            `json:"max_vus"`
-}
-type Execution struct {
-	SchemaVersion     int     `json:"schema_version"`
-	RunID             string  `json:"run_id"`
-	WorkerID          uint64  `json:"worker_id"`
-	ProcessStartedAt  *string `json:"process_started_at"`
-	ProcessEndedAt    *string `json:"process_ended_at"`
-	ExitCode          *int    `json:"exit_code"`
-	TerminationReason string  `json:"termination_reason"`
-	SummaryPresent    bool    `json:"summary_present"`
-	Errors            []Issue `json:"errors"`
 }

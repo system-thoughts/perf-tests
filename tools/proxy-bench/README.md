@@ -84,11 +84,11 @@ All knobs are environment variables, set them in the Job `env` or with `k6 run -
 k6 prints a short report instead of its default summary:
 
 ```text
-proxy-bench
+proxy-bench (sequential)
 
   Run           sequential via http://seed-client:4001, 60.0s
   Target        http://file-server/1g
-  Load          2000 req/s target, constant-arrival-rate, 64 to 512 VUs, peak 261
+  Load          2000 req/s target, constant-arrival-rate, 64 to 512 VUs
   Sequential    1 GiB in 4 MiB chunks, 256 per pass, 128 streams over 32 URLs
 
   Requests      119,987 total, 1999.8 req/s, 0 dropped

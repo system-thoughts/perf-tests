@@ -17,6 +17,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -40,10 +41,10 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 || e.ResultDir != "/results" {
+	if e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 {
 		t.Fatal(e)
 	}
-	for _, extra := range []string{"RESULT_DIR=", "RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
+	for _, extra := range []string{"RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
 		t.Run(extra, func(t *testing.T) {
 			if _, err := ReadEnvironment(append(baseEnv(), extra)); err == nil {
 				t.Fatal("accepted invalid environment")
@@ -63,50 +64,6 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 		if _, err := ReadEnvironment(append(baseEnv(), "DURATION="+value)); err != nil {
 			t.Fatalf("rejected supported duration %s: %v", value, err)
 		}
-	}
-}
-func TestExitPriority(t *testing.T) {
-	cases := []struct {
-		codes []string
-		want  int
-	}{{[]string{}, 0}, {[]string{"COVERAGE_UNVERIFIED"}, 0}, {[]string{"RESULT_INCOMPLETE"}, 4}, {[]string{"RESULT_INCOMPLETE", "WORKER_FAILED"}, 3}, {[]string{"WORKER_FAILED", "INPUT_INVALID", "RESULT_INCOMPLETE"}, 2}, {[]string{"INPUT_INVALID", "INTERRUPTED", "WORKER_FAILED"}, 130}}
-	for _, c := range cases {
-		issues := []Issue{}
-		for _, code := range c.codes {
-			issues = append(issues, Issue{Code: code})
-		}
-		if ExitCode(issues) != c.want {
-			t.Fatal(c)
-		}
-	}
-}
-
-func TestResultClaimDistinguishesConflictsFromIO(t *testing.T) {
-	dir := t.TempDir()
-	if err := claim(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := claim(dir); err == nil || contract.ErrorCode(err) != contract.DataConflict {
-		t.Fatalf("existing claim must be a data conflict: %v", err)
-	}
-	occupied := t.TempDir()
-	if err := os.WriteFile(filepath.Join(occupied, "existing-result"), []byte("keep"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := claim(occupied); err == nil || contract.ErrorCode(err) != contract.DataConflict {
-		t.Fatalf("existing result must be a data conflict: %v", err)
-	}
-	// An unusable ancestor fails directory creation, rather than claiming old
-	// output. Leave it untagged so the worker maps I/O failure to exit 3.
-	blocked := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(blocked, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := claim(blocked); err == nil || contract.ErrorCode(err) != contract.DataConflict {
-		t.Fatalf("existing output file must be a data conflict: %v", err)
-	}
-	if err := claim(filepath.Join(blocked, "results")); err == nil || contract.ErrorCode(err) == contract.DataConflict {
-		t.Fatalf("I/O failure mislabeled as existing results: %v", err)
 	}
 }
 func save(t *testing.T, name string, value any) []byte {
@@ -219,8 +176,15 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err = os.MkdirAll(filepath.Join(scripts, "lib"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
+	if err = os.MkdirAll(filepath.Join(scripts, "../lib"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const sharedSummary = "shared summary fixture"
+	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js", "../lib/summary.js"} {
 		contents := []byte("fixture")
+		if name == "../lib/summary.js" {
+			contents = []byte(sharedSummary)
+		}
 		if err = os.WriteFile(filepath.Join(scripts, name), contents, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -234,24 +198,64 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	env.Preparation = prepPath
 	env.TargetConfig = configPath
 	env.Proxy = config.Target.Proxy
-	env.ResultDir = filepath.Join(dir, "results")
-	if err = PrepareInput(ctx, env, scripts, io.Discard); err != nil {
+	output := filepath.Join(dir, "worker-input.json")
+	var logs bytes.Buffer
+	if err = PrepareInput(ctx, env, scripts, output, &logs); err != nil {
 		t.Fatal(err)
 	}
-	run, spec, err := ReadSpec(env.ResultDir)
+	var spec Spec
+	raw, err := os.ReadFile(output)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.TotalRate != 100 || run.WorkerCount != 2 || spec.Rate != 50 || spec.RegionCount != 4 || filepath.IsAbs(run.Manifest.Path) {
-		t.Fatalf("%+v %+v", run, spec)
+	if err = contract.DecodeRecord(raw, &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.ManifestID != manifestID || spec.PlanID != p.SHA256 {
+		t.Fatalf("%+v", spec)
+	}
+	var lines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.HasPrefix(line, Prefix) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("unexpected output: %s", logs.String())
+	}
+	var run RunSpec
+	var logged Spec
+	for i, record := range []struct {
+		prefix string
+		value  any
+	}{
+		{"PROXY_BENCH_FIXED_POOL_RUN_SPEC_V1 ", &run},
+		{"PROXY_BENCH_FIXED_POOL_WORKER_SPEC_V1 ", &logged},
+	} {
+		payload, ok := strings.CutPrefix(lines[i], record.prefix)
+		if !ok || json.Unmarshal([]byte(payload), record.value) != nil {
+			t.Fatalf("invalid log record: %s", lines[i])
+		}
+	}
+	if run.TotalRate != 100 || run.WorkerCount != 2 || run.RunID != env.RunID ||
+		run.Manifest.Path != "dataset-manifest.json" || run.Plan.Path != "plan/request-plan.json" ||
+		run.TargetConfig.Path != "target-config.yaml" || run.TargetPreparation.Path != "target-preparation.json" {
+		t.Fatalf("incorrect public context: %+v", run)
+	}
+	if run.ToolVersions["shared_lib_summary.js_sha256"] != contract.Digest([]byte(sharedSummary)) {
+		t.Fatal("shared report digest has an incorrect label or source")
 	}
 	if _, exists := run.ToolVersions["k6"]; exists {
-		t.Fatal("input preparation must not add engine version metadata")
+		t.Fatal("engine version leaked into public context")
+	}
+	if logged.WorkerID != 0 || logged.Rate != 50 || logged.RegionCount != 4 ||
+		logged.ManifestID != manifestID || logged.PlanID != p.SHA256 || logged.RunID != env.RunID {
+		t.Fatalf("incorrect worker context: %+v", logged)
 	}
 	if _, err = os.Stat(probe); !os.IsNotExist(err) {
 		t.Fatalf("input preparation invoked k6: %v", err)
 	}
-	if err = PrepareInput(ctx, env, scripts, io.Discard); err == nil || contract.ErrorCode(err) != contract.DataConflict {
-		t.Fatal("overwrote existing worker results", err)
+	if err = PrepareInput(ctx, env, scripts, filepath.Join(dir, "missing", "input.json"), io.Discard); err == nil {
+		t.Fatal("ignored temporary input write failure")
 	}
 }

@@ -164,7 +164,7 @@ build-proxy-bench-seed-cache-prepare:
 	go build -mod=readonly -o bin/proxy-bench-seed-cache-prepare ./tools/proxy-bench/fixed-pool/cmd/seed-cache-prepare
 .PHONY: build-proxy-bench-seed-cache-prepare
 
-# Build the internal worker input/report helper.
+# Build the internal worker input helper.
 build-proxy-bench-worker-support:
 	@mkdir -p bin
 	go build -mod=readonly -o bin/proxy-bench-worker-support ./tools/proxy-bench/fixed-pool/cmd/worker-support

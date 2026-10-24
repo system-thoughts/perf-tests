@@ -1,0 +1,114 @@
+name: Publish fixed-pool development deliverables
+
+on:
+  push:
+    branches: [nydus_hot_dev]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    if: github.repository == 'system-thoughts/perf-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      REGISTRY: ghcr.io/system-thoughts/perf-tests
+      FILE_SERVER_IMAGE: docker.io/dragonflyoss/file-server@sha256:2ba1179ee4c2634284311cba657b3981482e2061109a8bc1e53597b70a1199d9
+    steps:
+      - name: Checkout the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build static tools for both architectures
+        run: make build-proxy-bench-tools
+
+      - name: Set up ARM emulation for image construction
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select a build-specific tag
+        id: version
+        run: echo "tag=sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the preparation image
+        id: tools
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: tools/proxy-bench/fixed-pool/Dockerfile.tools
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/proxy-bench-tools:${{ steps.version.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Publish the worker image
+        id: worker
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: tools/proxy-bench/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/proxy-bench:${{ steps.version.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Package the matching Kubernetes material
+        env:
+          TOOLS_DIGEST: ${{ steps.tools.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          set -eu
+          mkdir -p dist/fixed-pool-deploy
+          cp -R tools/proxy-bench/fixed-pool/deploy tools/proxy-bench/fixed-pool/examples dist/fixed-pool-deploy/
+          find dist/fixed-pool-deploy -type f -name '*.md' -delete
+          cat > dist/build-info.txt <<EOF
+          Source: https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+          Build: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}
+          Platforms: linux/amd64,linux/arm64
+          Tools: ${REGISTRY}/proxy-bench-tools@${TOOLS_DIGEST}
+          Worker: ${REGISTRY}/proxy-bench@${WORKER_DIGEST}
+          FileServer: ${FILE_SERVER_IMAGE}
+
+          Extract fixed-pool-deploy.tar.gz to obtain deploy/ and examples/.
+          Use the image references above with the matching Kubernetes material.
+          Integration tests accept the extracted deploy/ directory as --deploy-dir.
+          Environment-specific configuration remains the operator's input.
+          This is a development build; test results are recorded separately.
+          EOF
+          cp dist/build-info.txt dist/fixed-pool-deploy/
+          tar -czf dist/fixed-pool-deploy.tar.gz -C dist fixed-pool-deploy
+          (cd dist && sha256sum fixed-pool-deploy.tar.gz build-info.txt > SHA256SUMS)
+          cat dist/build-info.txt >> "$GITHUB_STEP_SUMMARY"
+          cat dist/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the deployment bundle and build record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fixed-pool-${{ github.sha }}
+          path: |
+            dist/fixed-pool-deploy.tar.gz
+            dist/build-info.txt
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

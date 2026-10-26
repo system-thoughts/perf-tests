@@ -31,7 +31,7 @@ operator-side configuration, Job status and result handoff in the walkthrough.
 Provide two immutable image references that the source node can obtain:
 
 - **TOOLS_IMAGE:** the three preparation binaries built with the
-  [preparation tools Dockerfile](../../Dockerfile.tools).
+  [preparation tools Dockerfile](../../../Dockerfile.tools).
 - **FILE_SERVER_IMAGE:** nginx serving `/usr/share/nginx/html` on port 80, with
   HEAD and Range support. The existing
   [FileServer image](../../../../file-server/Dockerfile) provides this capability.

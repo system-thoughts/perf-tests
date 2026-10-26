@@ -150,24 +150,24 @@ docker-push-image-bench-v1-20gb-4:
 # Build fixed-pool preparation commands.
 build-proxy-bench-data-prepare:
 	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-data-prepare ./tools/proxy-bench/fixed-pool/cmd/data-prepare
+	go build -mod=readonly -o bin/proxy-bench-data-prepare ./cmd/proxy-bench-data-prepare
 .PHONY: build-proxy-bench-data-prepare
 
 build-proxy-bench-plan-prepare:
 	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-plan-prepare ./tools/proxy-bench/fixed-pool/cmd/plan-prepare
+	go build -mod=readonly -o bin/proxy-bench-plan-prepare ./cmd/proxy-bench-plan-prepare
 .PHONY: build-proxy-bench-plan-prepare
 
 # Build the Seed-cache preparation command.
 build-proxy-bench-seed-cache-prepare:
 	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-seed-cache-prepare ./tools/proxy-bench/fixed-pool/cmd/seed-cache-prepare
+	go build -mod=readonly -o bin/proxy-bench-seed-cache-prepare ./cmd/proxy-bench-seed-cache-prepare
 .PHONY: build-proxy-bench-seed-cache-prepare
 
 # Build the internal worker input helper.
 build-proxy-bench-worker-support:
 	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-worker-support ./tools/proxy-bench/fixed-pool/cmd/worker-support
+	go build -mod=readonly -o bin/proxy-bench-worker-support ./cmd/proxy-bench-worker-support
 .PHONY: build-proxy-bench-worker-support
 
 # Build static preparation and worker binaries for images and distribution.
@@ -177,13 +177,13 @@ build-proxy-bench-tools:
 		for command in data-prepare plan-prepare seed-cache-prepare worker-support; do \
 			CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -mod=readonly \
 				-o bin/proxy-bench-tools/$$arch/proxy-bench-$$command \
-				./tools/proxy-bench/fixed-pool/cmd/$$command || exit $$?; \
+				./cmd/proxy-bench-$$command || exit $$?; \
 		done; \
 	done
 .PHONY: build-proxy-bench-tools
 
 docker-build-proxy-bench-tools: build-proxy-bench-tools
-	docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=bin/proxy-bench-tools-image.tar -t $(D7Y_REGISTRY)/proxy-bench-tools:latest -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+	docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=bin/proxy-bench-tools-image.tar -t $(D7Y_REGISTRY)/proxy-bench-tools:latest -f tools/proxy-bench/Dockerfile.tools .
 .PHONY: docker-build-proxy-bench-tools
 
 # Run code lint

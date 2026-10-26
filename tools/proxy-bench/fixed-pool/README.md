@@ -279,7 +279,7 @@ overwriting or automatically repairing them.
 [schemas](schemas) describes version 1 contracts and command results. Shared Go
 validation also checks fields, duplicate keys, nulls, types, fixed seeds,
 geometry, identity relationships, and shard membership. Fixed fixtures live in
-[testdata/vectors.json](testdata/vectors.json). Generated manifests and plans use
+[pkg/fixedpool/testdata/vectors.json](../../../pkg/fixedpool/testdata/vectors.json). Generated manifests and plans use
 compact fixed-order JSON with one LF and no embedded self-hash. Imported valid
 manifest JSON is identified by its original bytes, without re-encoding.
 

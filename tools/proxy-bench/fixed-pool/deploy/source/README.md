@@ -6,7 +6,7 @@ FileServer. Generate it once and reuse the same source across test rounds.
 
 This directory provides Kubernetes deployment materials. It does not introduce a
 new deployment command or install Kubernetes/Dragonfly. The existing
-`proxy-bench-data-prepare` command runs inside the data Job.
+`proxy-bench-prepare data` command runs inside the data Job.
 
 ## What this bundle provides
 
@@ -30,13 +30,13 @@ operator-side configuration, Job status and result handoff in the walkthrough.
 
 Provide two immutable image references that the source node can obtain:
 
-- **TOOLS_IMAGE:** the three preparation binaries built with the
+- **TOOLS_IMAGE:** the preparation binary with three independent actions, built with the
   [preparation tools Dockerfile](../../../Dockerfile.tools).
 - **FILE_SERVER_IMAGE:** nginx serving `/usr/share/nginx/html` on port 80, with
   HEAD and Range support. The existing
   [FileServer image](../../../../file-server/Dockerfile) provides this capability.
 
-See [build instructions](../../README.md#build). Building a local OCI archive
+See [build instructions](../../README.md#deliverables-and-entrypoints). Building a local OCI archive
 does not distribute or publish it; arrange image delivery before deploying.
 
 ## Configure this dataset
@@ -76,7 +76,7 @@ Follow [OPERATIONS.md](OPERATIONS.md) in one shell session:
 | 2 | Prepare storage; create a PVC only if needed. | Correct volume and an empty/absent dataset directory. |
 | 3 | Run the data Job and preserve its actual result. | Successful Pod, original log and manifest reference. |
 | 4 | Start nginx and export the referenced manifest. | Local manifest SHA-256 matches the generation result. |
-| 5 | Pass the manifest to Seed preparation. | Every object's length, digest and target completion pass. |
+| 5 | Pass the manifest to Seed preparation. | Every object's length, digest and target/Range checks pass. |
 
 The walkthrough explains the longer configuration and JSON-checking snippets,
 including their inputs and outputs. No separate source-body download or manual
@@ -130,5 +130,5 @@ for a "latest" manifest.
 
 Retain source.env, rendered resources, Job/Pod facts and imageIDs, generation
 logs and the exported manifest. After publication, continue with
-[plan preparation](../../README.md#prepare-or-reuse-an-access-plan)
-and [Seed preparation](../../README.md#prepare-a-target-seed-cache).
+[plan preparation](../../README.md#2-generate-an-access-plan)
+and [Seed preparation](../../README.md#3-prepare-the-selected-seed).

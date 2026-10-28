@@ -82,3 +82,17 @@ func RequireSpace(directory string, bytes uint64) error {
 	}
 	return nil
 }
+
+// RequireEmpty excludes only this invocation's writer lock, never old results.
+func RequireEmpty(directory, lock string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != lock {
+			return Tag(DataConflict, fmt.Errorf("output %q must be new or empty; found %q; choose another location or explicitly clean it", directory, entry.Name()))
+		}
+	}
+	return nil
+}

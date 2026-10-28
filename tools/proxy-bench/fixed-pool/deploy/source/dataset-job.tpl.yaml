@@ -43,7 +43,7 @@ spec:
               generation_workers=$(printenv GENERATION_WORKERS)
               mkdir -p /data/reports
               set -C
-              exec /usr/local/bin/proxy-bench-data-prepare \
+              exec /usr/local/bin/proxy-bench-prepare data \
                 --size "$object_bytes" --count "$object_count" --root /data/dataset \
                 --base-url "$base_url" --generation-workers "$generation_workers" \
                 > "/data/reports/$job_name.json"

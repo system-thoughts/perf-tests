@@ -42,7 +42,6 @@ type RunSpec struct {
 	TargetConfig      contract.FileRef  `json:"target_config"`
 	TargetPreparation contract.FileRef  `json:"target_preparation"`
 	Plan              contract.FileRef  `json:"plan"`
-	IdentitySHA256    string            `json:"identity_sha256"`
 	Target            target.Target     `json:"target"`
 	TotalRate         uint64            `json:"total_rate"`
 	WorkerCount       uint64            `json:"worker_count"`
@@ -58,7 +57,7 @@ type Spec struct {
 	WorkerID         uint64            `json:"worker_id"`
 	PlanID           string            `json:"plan_id"`
 	ManifestID       string            `json:"manifest_id"`
-	ObjectsFile      contract.FileRef  `json:"objects_file"`
+	Manifest         contract.FileRef  `json:"manifest"`
 	Shard            contract.FileRef  `json:"shard"`
 	RegionCount      uint64            `json:"region_count"`
 	RangeBytes       uint64            `json:"range_bytes"`

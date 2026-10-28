@@ -26,13 +26,11 @@ spec:
             - name: MANIFEST
               value: /inputs/dataset-manifest.json
             - name: PLAN
-              value: /inputs/plans/${PLAN_KEY}/request-plan.json
+              value: /inputs/plans/request-plan.json
             - name: TARGET_PREPARATION
               value: /inputs/preparations/${PREPARATION_NAME}/target-preparation.json
             - name: TARGET_CONFIG
               value: /inputs/target-config.yaml
-            - name: HTTP_PROXY
-              value: "${HTTP_PROXY}"
             - name: RATE
               value: "${RATE}"
             - name: DURATION

@@ -33,9 +33,9 @@ spec:
               memory_budget=$(printenv PLAN_MEMORY_BUDGET)
               file_budget=$(printenv PLAN_FILE_BUDGET)
               mkdir -p /inputs/reports
-              set -- /usr/local/bin/proxy-bench-plan-prepare \
+              set -- /usr/local/bin/proxy-bench-prepare plan \
                 --manifest /inputs/dataset-manifest.json --range "$range_bytes" --workers "$workers" \
-                --plan-dir /inputs/plans
+                --out /inputs/plans
               if [ -n "$memory_budget" ]; then
                 set -- "$@" --memory-budget "$memory_budget"
               fi

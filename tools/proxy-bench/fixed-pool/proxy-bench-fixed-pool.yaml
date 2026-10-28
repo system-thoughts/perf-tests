@@ -1,5 +1,5 @@
 # Copy and edit this example for each run. Input PVC contains metadata only:
-# dataset-manifest.json, plan/, target-config.yaml, proxy-rules.json,
+# dataset-manifest.json, plan/, target-config.yaml,
 # target-preparation.json and target-object-results.json (preserve relative refs).
 apiVersion: batch/v1
 kind: Job
@@ -32,8 +32,6 @@ spec:
               value: /inputs/target-preparation.json
             - name: TARGET_CONFIG
               value: /inputs/target-config.yaml
-            - name: HTTP_PROXY
-              value: http://seed.example:4001
             - name: RATE
               value: "100"
             - name: DURATION

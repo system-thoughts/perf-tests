@@ -109,7 +109,7 @@ kubectl get pvc -n "$NAMESPACE" "$PVC_NAME" -o yaml > "$RENDERED/pvc-before.yaml
 
 ## 4. Generate data and preserve the actual result
 
-Apply only the data Job. It directly invokes proxy-bench-data-prepare on the final
+Apply only the data Job. It directly invokes proxy-bench-prepare data on the final
 PVC; it does not start an HTTP server. Stop on failure and keep the Job/Pod facts,
 logs and residual files. Deleting a failed Job does not empty its dataset.
 
@@ -222,8 +222,8 @@ kubectl get pod -n "$NAMESPACE" "$SERVER_POD" -o json > "$RENDERED/server-pod.js
 ```
 
 Read the manifest ID from the actual successful Job result. The generation path
-is /data/dataset/manifests/ID/dataset-manifest.json; the server sees the same file
-at /fixed-pool-data/manifests/ID/dataset-manifest.json. Export it unchanged and
+is /data/dataset/dataset-manifest.json; the server sees the same file
+at /fixed-pool-data/dataset-manifest.json. Export it unchanged and
 compare its raw SHA-256 to the generation result before handing it to other tools.
 
 ```sh
@@ -232,12 +232,12 @@ import json, re, sys
 r = json.load(open(sys.argv[1]))
 digest = r['manifest']['sha256']
 assert re.fullmatch('[a-f0-9]{64}', digest)
-assert r['manifest']['path'] == '/data/dataset/manifests/' + digest + '/dataset-manifest.json'
+assert r['manifest']['path'] == '/data/dataset/dataset-manifest.json'
 print(digest)
 PY
 )"
 kubectl exec -n "$NAMESPACE" "$SERVER_POD" -- \
-  cat "/fixed-pool-data/manifests/$MANIFEST_ID/dataset-manifest.json" \
+  cat "/fixed-pool-data/dataset-manifest.json" \
   > "$RENDERED/dataset-manifest.json"
 printf '%s  %s\n' "$MANIFEST_ID" "$RENDERED/dataset-manifest.json" | sha256sum -c -
 ```
@@ -245,7 +245,7 @@ printf '%s  %s\n' "$MANIFEST_ID" "$RENDERED/dataset-manifest.json" | sha256sum -
 ## 6. Continue with Seed preparation
 
 Provision the previously selected external endpoint if applicable, then pass the
-exported manifest to [Seed preparation](../../README.md#prepare-a-target-seed-cache).
+exported manifest to [Seed preparation](../../README.md#3-prepare-the-selected-seed).
 There is no separate source-body download or manual HTTP verification step.
 The command validates full-pool lengths, digests and target completion, streams
 bodies without storing another copy, and records per-object errors.

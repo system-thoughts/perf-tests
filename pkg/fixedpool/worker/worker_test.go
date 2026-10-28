@@ -34,7 +34,7 @@ import (
 )
 
 func baseEnv() []string {
-	return []string{"MANIFEST=m", "PLAN=p", "TARGET_PREPARATION=t", "TARGET_CONFIG=c", "HTTP_PROXY=http://seed:4001", "RATE=100", "RUN_ID=run-1"}
+	return []string{"MANIFEST=m", "PLAN=p", "TARGET_PREPARATION=t", "TARGET_CONFIG=c", "RATE=100", "RUN_ID=run-1"}
 }
 func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 	e, err := ReadEnvironment(baseEnv())
@@ -88,16 +88,15 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := plan.Prepare(ctx, data.Manifest, manifestRaw, plan.Spec{Directory: filepath.Join(dir, "plans"), RangeBytes: 16, Workers: 2})
+	p, err := plan.Prepare(ctx, manifestRaw, plan.Spec{Directory: filepath.Join(dir, "plans"), RangeBytes: 16, Workers: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := save(t, filepath.Join(dir, "proxy-rules.json"), target.ProxyRules{SchemaVersion: 1, FilteredQueryParams: []string{}})
-	config := target.Config{SchemaVersion: 1, Target: target.Target{Ref: "seed", Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1", InstanceRef: "test-instance"}, ProxyRulesRef: contract.FileRef{Path: "proxy-rules.json", SHA256: contract.Digest(rules)}, Prepare: target.Options{Concurrency: 1, RequestTimeoutMS: 1000, ReadyTimeoutMS: 1000}}
+	config := target.Config{SchemaVersion: 1, Target: target.Target{Ref: "seed", Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}, Prepare: target.Options{Concurrency: 1, RequestTimeoutMS: 1000, ReadyTimeoutMS: 1000}}
 	// JSON is a strict subset of YAML, accepted by the target-config reader.
 	configPath := filepath.Join(dir, "target-config.yaml")
 	save(t, configPath, config)
-	_, identity, err := target.ReadConfig(configPath)
+	_, err = target.ReadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +115,10 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	evidenceRaw := save(t, filepath.Join(dir, "target-object-results.json"), objects)
 	evidenceRef := contract.FileRef{Path: "target-object-results.json", SHA256: contract.Digest(evidenceRaw)}
 	manifestID := data.ManifestSHA256
-	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, IdentitySHA256: &identity, PieceStrategy: "auto", Target: &config.Target, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
+	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, PieceStrategy: "auto", Target: &target.PreparedTarget{Ref: config.Target.Ref, Proxy: config.Target.Proxy, ExpectedServerIP: config.Target.ExpectedServerIP}, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
 	prepPath := filepath.Join(dir, "target-preparation.json")
 	prepRaw := save(t, prepPath, prep)
-	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err != nil {
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err != nil {
 		t.Fatal(err)
 	}
 	// Opaque evidence need not be semantically audited by every worker. Its
@@ -128,15 +127,15 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, evidenceRef.Path), opaque, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err == nil {
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err == nil {
 		t.Fatal("ignored evidence digest")
 	}
 	prep.EvidenceFile.SHA256 = contract.Digest(opaque)
 	prepRaw = save(t, prepPath, prep)
-	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config, identity); err != nil {
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err != nil {
 		t.Fatalf("worker re-audited producer evidence: %v", err)
 	}
-	for _, field := range []string{"status", "manifest_sha256", "identity_sha256", "object_count", "method", "schema_version", "unknown"} {
+	for _, field := range []string{"status", "manifest_sha256", "object_count", "method", "schema_version", "unknown"} {
 		var value map[string]any
 		if err = json.Unmarshal(prepRaw, &value); err != nil {
 			t.Fatal(err)
@@ -151,9 +150,23 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = CheckPreparation(raw, prepPath, data.Manifest, manifestID, config, identity); err == nil {
+		if err = CheckPreparation(raw, prepPath, data.Manifest, manifestID, config); err == nil {
 			t.Fatalf("accepted changed %s", field)
 		}
+	}
+	// Historical labels/rule digest do not change the verified data/target.
+	prep.Target.Ref = "renamed target"
+	prep.Target.InstanceRef = "historical-instance"
+	identity := strings.Repeat("a", 64)
+	prep.IdentitySHA256 = &identity
+	prepRaw = save(t, prepPath, prep)
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err != nil {
+		t.Fatalf("historical label rejected: %v", err)
+	}
+	badTarget := config
+	badTarget.Target.ExpectedServerIP = "192.0.2.2"
+	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, badTarget); err == nil {
+		t.Fatal("accepted preparation for another target")
 	}
 	// Worker zero needs no peer shard file.
 	if err = os.Remove(filepath.Join(filepath.Dir(p.Path), "shards/1.json")); err != nil {
@@ -197,7 +210,6 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	env.Plan = p.Path
 	env.Preparation = prepPath
 	env.TargetConfig = configPath
-	env.Proxy = config.Target.Proxy
 	output := filepath.Join(dir, "worker-input.json")
 	var logs bytes.Buffer
 	if err = PrepareInput(ctx, env, scripts, output, &logs); err != nil {
@@ -210,6 +222,13 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	}
 	if err = contract.DecodeRecord(raw, &spec); err != nil {
 		t.Fatal(err)
+	}
+	if spec.Manifest.Path != data.ManifestPath || spec.Manifest.SHA256 != manifestID || spec.Proxy != config.Target.Proxy {
+		t.Fatalf("wrong manifest/proxy: %+v", spec)
+	}
+	proxy, err := os.ReadFile(filepath.Join(dir, "proxy"))
+	if err != nil || string(proxy) != config.Target.Proxy+"\n" {
+		t.Fatalf("private proxy handoff: %q %v", proxy, err)
 	}
 	if spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.ManifestID != manifestID || spec.PlanID != p.SHA256 {
 		t.Fatalf("%+v", spec)
@@ -251,6 +270,9 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if logged.WorkerID != 0 || logged.Rate != 50 || logged.RegionCount != 4 ||
 		logged.ManifestID != manifestID || logged.PlanID != p.SHA256 || logged.RunID != env.RunID {
 		t.Fatalf("incorrect worker context: %+v", logged)
+	}
+	if !strings.Contains(logs.String(), "B=64 N=2") || !strings.Contains(logs.String(), "R=16 W=2") || !strings.Contains(logs.String(), data.ManifestPath) {
+		t.Fatalf("missing input facts: %s", logs.String())
 	}
 	if _, err = os.Stat(probe); !os.IsNotExist(err) {
 		t.Fatalf("input preparation invoked k6: %v", err)

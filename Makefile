@@ -147,22 +147,11 @@ docker-push-image-bench-v1-20gb-4:
 	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(D7Y_REGISTRY)/image-bench:v1-20gb-4 -f ./build/images/image-bench/v1-20gb-4/Dockerfile .
 .PHONY: docker-push-image-bench-v1-20gb-4
 
-# Build fixed-pool preparation commands.
-build-proxy-bench-data-prepare:
+# Build the independent fixed-pool preparation actions.
+build-proxy-bench-prepare:
 	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-data-prepare ./cmd/proxy-bench-data-prepare
-.PHONY: build-proxy-bench-data-prepare
-
-build-proxy-bench-plan-prepare:
-	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-plan-prepare ./cmd/proxy-bench-plan-prepare
-.PHONY: build-proxy-bench-plan-prepare
-
-# Build the Seed-cache preparation command.
-build-proxy-bench-seed-cache-prepare:
-	@mkdir -p bin
-	go build -mod=readonly -o bin/proxy-bench-seed-cache-prepare ./cmd/proxy-bench-seed-cache-prepare
-.PHONY: build-proxy-bench-seed-cache-prepare
+	go build -mod=readonly -o bin/proxy-bench-prepare ./cmd/proxy-bench-prepare
+.PHONY: build-proxy-bench-prepare
 
 # Build the internal worker input helper.
 build-proxy-bench-worker-support:
@@ -174,7 +163,7 @@ build-proxy-bench-worker-support:
 build-proxy-bench-tools:
 	@for arch in amd64 arm64; do \
 		mkdir -p bin/proxy-bench-tools/$$arch; \
-		for command in data-prepare plan-prepare seed-cache-prepare worker-support; do \
+		for command in prepare worker-support; do \
 			CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -mod=readonly \
 				-o bin/proxy-bench-tools/$$arch/proxy-bench-$$command \
 				./cmd/proxy-bench-$$command || exit $$?; \
@@ -218,11 +207,9 @@ clean:
 
 help: 
 	@echo "make build-proxy-bench-worker-support       build the internal worker helper"
-	@echo "make build-proxy-bench-seed-cache-prepare   build the fixed-pool Seed preparation command"
+	@echo "make build-proxy-bench-prepare             build the fixed-pool preparation command"
 	@echo "make build-proxy-bench-tools                build amd64/arm64 preparation and worker binaries"
 	@echo "make docker-build-proxy-bench-tools         build the preparation tools image"
-	@echo "make build-proxy-bench-data-prepare         build the fixed-pool dataset command"
-	@echo "make build-proxy-bench-plan-prepare         build the fixed-pool access-plan command"
 	@echo "make docker-build-file-server               build file-server image"
 	@echo "make docker-push-file-server                push file-server image"
 	@echo "make docker-build-proxy-bench               build proxy-bench image"

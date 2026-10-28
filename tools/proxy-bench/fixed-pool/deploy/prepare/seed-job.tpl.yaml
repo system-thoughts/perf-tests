@@ -31,7 +31,7 @@ spec:
               preparation_name=$(printenv PREPARATION_NAME)
               mkdir -p /inputs/reports /inputs/preparations
               set -C
-              exec /usr/local/bin/proxy-bench-seed-cache-prepare \
+              exec /usr/local/bin/proxy-bench-prepare seed-cache \
                 --manifest /inputs/dataset-manifest.json \
                 --target-config /inputs/target-config.yaml \
                 --out "/inputs/preparations/$preparation_name" \

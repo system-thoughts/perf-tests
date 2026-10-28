@@ -109,7 +109,7 @@ func TestIntegerAndResourceBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if est.MemoryBytes != 67112433 || est.FileBytes != 1052200 {
+	if est.MemoryBytes != 67112433 || est.FileBytes != 1050200 {
 		t.Fatalf("estimate=%+v", est)
 	}
 	if _, err := Estimate(^uint64(0), 8, 3); err == nil {
@@ -149,9 +149,9 @@ func readFile(t *testing.T, name string) []byte {
 	return b
 }
 
-func TestPlanPublishReuseAndGeometryChanges(t *testing.T) {
+func TestPlanPublishConflictsAndGeometryChanges(t *testing.T) {
 	m, data, spec := fixture(t)
-	result, err := Prepare(context.Background(), m, data, spec)
+	result, err := Prepare(context.Background(), data, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,15 +181,15 @@ func TestPlanPublishReuseAndGeometryChanges(t *testing.T) {
 			t.Fatal("run parameter in reusable plan")
 		}
 	}
-	reused, err := Prepare(context.Background(), m, data, spec)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := Prepare(context.Background(), data, spec); contract.ErrorCode(err) != contract.DataConflict {
+		t.Fatalf("existing plan was reused or overwritten: %v", err)
 	}
-	if !reused.Reused || reused.Path != result.Path || reused.SHA256 != result.SHA256 {
-		t.Fatal("plan was not reused")
+	if _, err := os.Stat(filepath.Join(spec.Directory, "object-urls.json")); !os.IsNotExist(err) {
+		t.Fatal("redundant URL file published")
 	}
+	spec.Directory = filepath.Join(t.TempDir(), "w2")
 	spec.Workers = 2
-	changed, err := Prepare(context.Background(), m, data, spec)
+	changed, err := Prepare(context.Background(), data, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +209,9 @@ func TestPlanPublishReuseAndGeometryChanges(t *testing.T) {
 	if reconstructed != [8]uint32{2, 0, 5, 1, 3, 7, 4, 6} {
 		t.Fatal("W changed global order")
 	}
+	spec.Directory = filepath.Join(t.TempDir(), "r32")
 	spec.RangeBytes = 32
-	changedRange, err := Prepare(context.Background(), m, data, spec)
+	changedRange, err := Prepare(context.Background(), data, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,13 +224,13 @@ func TestPlanPublishReuseAndGeometryChanges(t *testing.T) {
 func TestPreflightAndActualBudgets(t *testing.T) {
 	for _, kind := range []string{"memory", "files"} {
 		t.Run(kind, func(t *testing.T) {
-			m, data, spec := fixture(t)
+			_, data, spec := fixture(t)
 			if kind == "memory" {
 				spec.MemoryBudget = 1
 			} else {
 				spec.FileBudget = 1
 			}
-			result, err := Prepare(context.Background(), m, data, spec)
+			result, err := Prepare(context.Background(), data, spec)
 			if err == nil || result.Estimates.MemoryBytes == 0 || result.Estimates.FileBytes == 0 {
 				t.Fatal("budget did not fail with estimates", err)
 			}
@@ -261,6 +262,12 @@ func TestPreflightAndActualBudgets(t *testing.T) {
 	if _, err := os.Stat(final); !os.IsNotExist(err) {
 		t.Fatal("postflight published an over-budget plan")
 	}
+	if err := os.Mkdir(final, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(temporary, "request-plan.json"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := publish(temporary, final, actual, actual); err != nil {
 		t.Fatal(err)
 	}
@@ -277,10 +284,10 @@ func overwrite(t *testing.T, name string, data []byte) {
 }
 
 func TestCorruptPlanRejected(t *testing.T) {
-	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "objects hash", "shard hash", "duplicate region", "out of bounds", "wrong count"} {
+	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "old objects_file", "shard hash", "duplicate region", "out of bounds", "wrong count"} {
 		t.Run(kind, func(t *testing.T) {
 			m, data, spec := fixture(t)
-			result, err := Prepare(context.Background(), m, data, spec)
+			result, err := Prepare(context.Background(), data, spec)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -294,8 +301,8 @@ func TestCorruptPlanRejected(t *testing.T) {
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"extra":1,"schema_version":1`), 1))
 			case "duplicate":
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1))
-			case "objects hash":
-				overwrite(t, filepath.Join(filepath.Dir(result.Path), "object-urls.json"), []byte("[]\n"))
+			case "old objects_file":
+				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"objects_file":{"path":"object-urls.json","sha256":"`+strings.Repeat("a", 64)+`"}`), 1))
 			case "shard hash":
 				overwrite(t, filepath.Join(filepath.Dir(result.Path), "shards/0.json"), []byte("[1,2,4]\n"))
 			case "duplicate region", "out of bounds", "wrong count":
@@ -331,7 +338,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 			if _, _, _, err := Load(context.Background(), result.Path, m, contract.Digest(data)); err == nil {
 				t.Fatal("corrupt plan accepted")
 			}
-			if _, err := Prepare(context.Background(), m, data, spec); err == nil {
+			if _, err := Prepare(context.Background(), data, spec); err == nil {
 				t.Fatal("corrupt plan silently regenerated")
 			}
 		})
@@ -339,10 +346,10 @@ func TestCorruptPlanRejected(t *testing.T) {
 }
 
 func TestCancelledPlanIsNotPublished(t *testing.T) {
-	m, data, spec := fixture(t)
+	_, data, spec := fixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := Prepare(ctx, m, data, spec); err == nil {
+	if _, err := Prepare(ctx, data, spec); err == nil {
 		t.Fatal("cancelled plan succeeded")
 	}
 	entries, err := os.ReadDir(spec.Directory)
@@ -350,11 +357,11 @@ func TestCancelledPlanIsNotPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".incomplete-") {
+		if entry.IsDir() && entry.Name() != ".incomplete" {
 			t.Fatal("cancelled plan was published")
 		}
 	}
-	if _, err := Prepare(context.Background(), m, data, spec); err == nil {
+	if _, err := Prepare(context.Background(), data, spec); err == nil {
 		t.Fatal("unfinished plan adopted")
 	}
 }
@@ -362,7 +369,7 @@ func TestCancelledPlanIsNotPublished(t *testing.T) {
 // Canonical order is proved at publication, not regenerated by consumers.
 func TestPublicationAndConsumptionValidation(t *testing.T) {
 	m, data, spec := fixture(t)
-	result, err := Prepare(context.Background(), m, data, spec)
+	result, err := Prepare(context.Background(), data, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,12 +404,12 @@ func TestPublicationAndConsumptionValidation(t *testing.T) {
 }
 
 func TestRawManifestIdentity(t *testing.T) {
-	m, data, spec := fixture(t)
+	_, data, spec := fixture(t)
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, data, "", "  "); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Prepare(context.Background(), m, pretty.Bytes(), spec)
+	result, err := Prepare(context.Background(), pretty.Bytes(), spec)
 	if err != nil {
 		t.Fatalf("valid raw JSON bytes rejected: %v", err)
 	}

@@ -27,7 +27,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
@@ -47,12 +46,13 @@ type Estimates struct {
 }
 
 type Result struct {
+	ObjectSize      uint64
+	ObjectCount     uint64
 	Path            string    `json:"path"`
 	SHA256          string    `json:"sha256"`
 	RegionCount     uint64    `json:"region_count"`
 	Estimates       Estimates `json:"estimates"`
 	ActualFileBytes uint64    `json:"actual_file_bytes"`
-	Reused          bool      `json:"reused"`
 }
 
 func Estimate(manifestBytes, total, workers uint64) (Estimates, error) {
@@ -64,20 +64,15 @@ func Estimate(manifestBytes, total, workers uint64) (Estimates, error) {
 	if manifestBytes > (math.MaxUint64-max(baseMemory, baseFiles))/2 {
 		return Estimates{}, fmt.Errorf("resource estimate overflows uint64")
 	}
-	return Estimates{MemoryBytes: baseMemory + 2*manifestBytes, FileBytes: baseFiles + 2*manifestBytes}, nil
+	return Estimates{MemoryBytes: baseMemory + 2*manifestBytes, FileBytes: baseFiles}, nil
 }
 
-func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byte, spec Spec) (result Result, err error) {
-	if err := contract.ValidateManifest(manifest); err != nil {
-		return result, contract.Tag(contract.ContractMismatch, err)
+func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result, err error) {
+	manifest, err := contract.ParseManifest(manifestData)
+	if err != nil {
+		return result, err
 	}
-	var decoded contract.Manifest
-	if err := contract.Decode(manifestData, &decoded); err != nil {
-		return result, contract.Tag(contract.ContractMismatch, err)
-	}
-	if !reflect.DeepEqual(manifest, decoded) {
-		return result, contract.Tag(contract.ContractMismatch, fmt.Errorf("manifest value does not match supplied bytes"))
-	}
+	result.ObjectSize, result.ObjectCount = manifest.ObjectSize, manifest.ObjectCount
 	perObject, total, err := Geometry(manifest.ObjectSize, manifest.ObjectCount, spec.RangeBytes, spec.Workers)
 	if err != nil {
 		return result, contract.Tag(contract.InputInvalid, err)
@@ -94,7 +89,7 @@ func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byt
 		return result, contract.Tag(contract.BudgetExceeded, fmt.Errorf("estimated files %d exceed file-budget %d", result.Estimates.FileBytes, spec.FileBudget))
 	}
 	if spec.Directory == "" {
-		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("plan-dir is required"))
+		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("out is required"))
 	}
 	directory, err := filepath.Abs(spec.Directory)
 	if err != nil {
@@ -105,43 +100,11 @@ func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byt
 		return result, err
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
+	if err := contract.RequireEmpty(directory, ".proxy-bench-plan.lock"); err != nil {
+		return result, err
+	}
 	manifestSHA := contract.Digest(manifestData)
-	// The directory is keyed by inputs for direct reuse without scanning history.
-	// plan_id remains the SHA-256 of request-plan.json, not this directory key.
-	key, err := contract.Encode(struct {
-		Manifest  string `json:"manifest_sha256"`
-		Range     uint64 `json:"range_bytes"`
-		Workers   uint64 `json:"worker_count"`
-		Algorithm string `json:"algorithm"`
-		Seed      string `json:"seed"`
-	}{manifestSHA, spec.RangeBytes, spec.Workers, contract.OrderAlgorithm, contract.OrderSeed})
-	if err != nil {
-		return result, err
-	}
-	final := filepath.Join(directory, contract.Digest(key))
-	temporary := filepath.Join(directory, ".incomplete-"+contract.Digest(key))
-	if _, err := os.Lstat(temporary); !os.IsNotExist(err) {
-		return result, contract.Tag(contract.DataConflict, fmt.Errorf("unfinished plan at %s; inspect and clean before retrying", temporary))
-	}
-	if info, err := os.Lstat(final); err == nil {
-		if !info.IsDir() {
-			return result, contract.Tag(contract.DataConflict, fmt.Errorf("existing plan directory conflict at %s", final))
-		}
-		loaded, raw, actual, err := Load(ctx, filepath.Join(final, "request-plan.json"), manifest, manifestSHA)
-		if err != nil {
-			return result, contract.Tag(contract.ContractMismatch, fmt.Errorf("existing plan conflict: %w", err))
-		}
-		if loaded.RangeBytes != spec.RangeBytes || loaded.WorkerCount != spec.Workers {
-			return result, contract.Tag(contract.ContractMismatch, fmt.Errorf("existing plan geometry conflict"))
-		}
-		if spec.FileBudget != 0 && actual > spec.FileBudget {
-			return result, contract.Tag(contract.BudgetExceeded, fmt.Errorf("actual plan files exceed file-budget"))
-		}
-		result.Path, result.SHA256, result.ActualFileBytes, result.Reused = filepath.Join(final, "request-plan.json"), contract.Digest(raw), actual, true
-		return result, nil
-	} else if !os.IsNotExist(err) {
-		return result, err
-	}
+	temporary := filepath.Join(directory, ".incomplete")
 	if err := contract.RequireSpace(directory, result.Estimates.FileBytes); err != nil {
 		return result, err
 	}
@@ -156,23 +119,11 @@ func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byt
 			if _, statErr := os.Lstat(temporary); statErr == nil {
 				err = fmt.Errorf("%w; unfinished plan retained at %s", err, temporary)
 			} else {
-				err = fmt.Errorf("%w; inspect publication at %s", err, final)
+				err = fmt.Errorf("%w; inspect publication at %s", err, directory)
 			}
 		}
 	}()
 	p := contract.Plan{SchemaVersion: 1, ManifestSHA256: manifestSHA, RangeBytes: spec.RangeBytes, RegionsPerObject: perObject, RegionCount: total, Algorithm: contract.OrderAlgorithm, Seed: contract.OrderSeed, WorkerCount: spec.Workers, Shards: make([]contract.Shard, int(spec.Workers))}
-	urls := make([]string, len(manifest.Objects))
-	for i, object := range manifest.Objects {
-		urls[i] = object.URL
-	}
-	data, err := contract.Encode(urls)
-	if err != nil {
-		return result, err
-	}
-	if err := contract.WriteFile(filepath.Join(temporary, "object-urls.json"), data); err != nil {
-		return result, err
-	}
-	p.ObjectsFile = contract.FileRef{Path: "object-urls.json", SHA256: contract.Digest(data)}
 	values, err := permutation(ctx, total)
 	if err != nil {
 		return result, err
@@ -188,7 +139,7 @@ func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byt
 		}
 		p.Shards[worker] = contract.Shard{WorkerID: worker, RegionCount: ShardCount(total, spec.Workers, worker), Path: path, SHA256: digest}
 	}
-	data, err = contract.Encode(p)
+	data, err := contract.Encode(p)
 	if err != nil {
 		return result, err
 	}
@@ -200,35 +151,40 @@ func Prepare(ctx context.Context, manifest contract.Manifest, manifestData []byt
 		return result, err
 	}
 	result.ActualFileBytes = actual
-	if err := publish(temporary, final, actual, spec.FileBudget); err != nil {
+	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	result.Path, result.SHA256, result.ActualFileBytes = filepath.Join(final, "request-plan.json"), contract.Digest(data), actual
+	if err := publish(temporary, directory, actual, spec.FileBudget); err != nil {
+		return result, err
+	}
+	result.Path, result.SHA256, result.ActualFileBytes = filepath.Join(directory, "request-plan.json"), contract.Digest(data), actual
 	return result, nil
 }
 
-// publish is the actual-byte gate, independent of the conservative preflight
-// estimate. A failed postflight never makes the staged plan reusable.
-func publish(temporary, final string, actual, budget uint64) error {
+// Publish the descriptor last: interrupted shard publication is not consumable.
+func publish(temporary, directory string, actual, budget uint64) error {
 	if budget != 0 && actual > budget {
 		return contract.Tag(contract.BudgetExceeded, fmt.Errorf("actual plan files %d exceed file-budget %d", actual, budget))
 	}
 	if err := contract.SyncDir(filepath.Join(temporary, "shards")); err != nil {
 		return err
 	}
-	if err := os.Chmod(temporary, 0755); err != nil {
+	if err := os.Rename(filepath.Join(temporary, "shards"), filepath.Join(directory, "shards")); err != nil {
 		return err
 	}
-	if err := contract.SyncDir(temporary); err != nil {
+	if err := contract.SyncDir(directory); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(final); !os.IsNotExist(err) {
-		return fmt.Errorf("plan publication conflict at %s", final)
-	}
-	if err := os.Rename(temporary, final); err != nil {
+	if err := os.Link(filepath.Join(temporary, "request-plan.json"), filepath.Join(directory, "request-plan.json")); err != nil {
 		return err
 	}
-	return contract.SyncDir(filepath.Dir(final))
+	if err := contract.SyncDir(directory); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(temporary); err != nil {
+		return err
+	}
+	return contract.SyncDir(directory)
 }
 
 func writeShard(ctx context.Context, name string, values []uint32, worker, workers uint64) (digest string, err error) {

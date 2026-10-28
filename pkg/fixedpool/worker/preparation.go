@@ -31,22 +31,26 @@ import (
 
 // CheckPreparation checks the published ready record and evidence integrity.
 // Full object semantics are established by preparation, not re-audited by each worker.
-func CheckPreparation(raw []byte, name string, m contract.Manifest, manifestID string, c target.Config, identity string) error {
+func CheckPreparation(raw []byte, name string, m contract.Manifest, manifestID string, c target.Config) error {
 	var r target.Result
 	if err := contract.DecodeRecord(raw, &r); err != nil {
 		return fmt.Errorf("TARGET_PREPARATION: %w", err)
 	}
 	if r.SchemaVersion != 1 || r.PreparationID == "" || r.Status != target.StatusReady || len(r.Errors) != 0 {
-		return fmt.Errorf("target-preparation status/schema/errors is not ready")
+		return fmt.Errorf("target-preparation requires schema=1, preparation_id, status=ready and no errors; actual schema=%d id=%q status=%q errors=%d", r.SchemaVersion, r.PreparationID, r.Status, len(r.Errors))
 	}
 	if r.ManifestSHA256 == nil || *r.ManifestSHA256 != manifestID {
-		return fmt.Errorf("target-preparation manifest_sha256 mismatch")
+		actual := "<missing>"
+		if r.ManifestSHA256 != nil {
+			actual = *r.ManifestSHA256
+		}
+		return fmt.Errorf("target-preparation manifest_sha256 mismatch: expected %s, actual %s", manifestID, actual)
 	}
-	if r.IdentitySHA256 == nil || *r.IdentitySHA256 != identity || r.PieceStrategy != "auto" || r.Method != target.Method {
-		return fmt.Errorf("target-preparation identity_sha256/piece_strategy/method mismatch")
+	if r.PieceStrategy != "auto" || r.Method != target.Method {
+		return fmt.Errorf("target-preparation piece_strategy/method mismatch")
 	}
-	if r.Target == nil || *r.Target != c.Target {
-		return fmt.Errorf("target-preparation target mismatch")
+	if r.Target == nil || r.Target.Proxy != c.Target.Proxy || r.Target.ExpectedServerIP != c.Target.ExpectedServerIP {
+		return fmt.Errorf("target-preparation target.proxy/expected_server_ip mismatch: expected %s/%s, actual %+v", c.Target.Proxy, c.Target.ExpectedServerIP, r.Target)
 	}
 	if r.ObjectCount == nil || *r.ObjectCount != m.ObjectCount || r.Prepare == nil || r.Prepare.Concurrency == 0 || r.Prepare.RequestTimeoutMS == 0 || r.Prepare.ReadyTimeoutMS == 0 {
 		return fmt.Errorf("target-preparation object_count/prepare invalid")
@@ -56,10 +60,10 @@ func CheckPreparation(raw []byte, name string, m contract.Manifest, manifestID s
 	}
 	digest, err := evidenceDigest(filepath.Join(filepath.Dir(name), r.EvidenceFile.Path))
 	if err != nil {
-		return fmt.Errorf("evidence_file: %w", err)
+		return contract.Input("TARGET_PREPARATION.evidence_file", filepath.Join(filepath.Dir(name), r.EvidenceFile.Path), err)
 	}
 	if digest != r.EvidenceFile.SHA256 {
-		return fmt.Errorf("evidence_file SHA-256 mismatch")
+		return contract.Input("TARGET_PREPARATION.evidence_file", filepath.Join(filepath.Dir(name), r.EvidenceFile.Path), fmt.Errorf("sha256 mismatch: expected %s, actual %s", r.EvidenceFile.SHA256, digest))
 	}
 	return nil
 }

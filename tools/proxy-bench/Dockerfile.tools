@@ -4,9 +4,7 @@ RUN apk add --no-cache jq
 
 ARG TARGETARCH
 
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-data-prepare /usr/local/bin/
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-plan-prepare /usr/local/bin/
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-seed-cache-prepare /usr/local/bin/
+COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-prepare /usr/local/bin/
 
 # A Job selects the preparation command explicitly; no daemon or orchestrator.
-CMD ["/usr/local/bin/proxy-bench-data-prepare", "--help"]
+CMD ["/usr/local/bin/proxy-bench-prepare", "--help"]

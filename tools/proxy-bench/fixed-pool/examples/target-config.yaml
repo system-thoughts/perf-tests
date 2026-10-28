@@ -3,10 +3,6 @@ target:
   ref: seed-one
   proxy: http://192.0.2.10:4001
   expected_server_ip: 192.0.2.10
-  instance_ref: REPLACE_WITH_OBSERVED_POD_UID_OR_PROCESS_START_ID
-proxy_rules_ref:
-  path: proxy-rules.json
-  sha256: REPLACE_WITH_SHA256_OF_ACTUAL_RULES_FILE
 # Defaults apply when prepare or individual fields are omitted.
 prepare:
   concurrency: 1

@@ -32,6 +32,8 @@ child=''
 [ "$interrupted" -eq 0 ] || exit 130
 [ "$prepare_code" -eq 0 ] || exit "$prepare_code"
 
+# Derive the proxy from the validated target configuration, without eval.
+IFS= read -r HTTP_PROXY < "$work_dir/proxy" || exit 3
 # Go/k6's proxy transport must see the real environment, without bypasses.
 unset http_proxy https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 export HTTP_PROXY

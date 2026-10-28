@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -257,28 +256,35 @@ func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 	dir := t.TempDir()
-	rules := []byte(`{"schema_version":1,"filtered_query_params":[],"rewrite_url":false,"use_tls":false}`)
-	if err := os.WriteFile(filepath.Join(dir, "rules.json"), rules, 0600); err != nil {
-		t.Fatal(err)
-	}
-	original := fmt.Sprintf("schema_version: 1\ntarget:\n  ref: seed\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n  instance_ref: test-instance\nproxy_rules_ref:\n  path: rules.json\n  sha256: %s\n", contract.Digest(rules))
+	original := "schema_version: 1\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
 	path := filepath.Join(dir, "target.yaml")
 	for _, test := range []struct{ name, suffix string }{
-		{"defaults", ""}, {"zero-concurrency", "prepare:\n  concurrency: 0\n"},
+		{"defaults", ""}, {"custom", "prepare:\n  concurrency: 2\n  request_timeout_ms: 1000\n  ready_timeout_ms: 200\n"}, {"old-rules", "proxy_rules_ref: {}\n"}, {"zero-concurrency", "prepare:\n  concurrency: 0\n"},
 		{"zero-ready-timeout", "prepare:\n  ready_timeout_ms: 0\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := os.WriteFile(path, []byte(original+test.suffix), 0600); err != nil {
 				t.Fatal(err)
 			}
-			config, identity, err := ReadConfig(path)
-			if test.name == "defaults" {
-				if err != nil || !contract.ValidDigest(identity) || config.Prepare.Concurrency == 0 || config.Prepare.RequestTimeoutMS == 0 || config.Prepare.ReadyTimeoutMS == 0 {
-					t.Fatalf("%+v %s %v", config, identity, err)
+			config, err := ReadConfig(path)
+			if test.name == "defaults" || test.name == "custom" {
+				if err != nil || config.Prepare.Concurrency == 0 || config.Prepare.RequestTimeoutMS == 0 || config.Prepare.ReadyTimeoutMS == 0 {
+					t.Fatalf("%+v %v", config, err)
 				}
 			} else if err == nil {
 				t.Fatal("accepted invalid business constraint")
 			}
 		})
+	}
+}
+
+func TestRemovedInstanceConfigurationRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target.yaml")
+	raw := "schema_version: 1\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n  instance_ref: old\n"
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "instance_ref") {
+		t.Fatalf("missing field/path diagnostic: %v", err)
 	}
 }

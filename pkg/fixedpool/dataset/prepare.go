@@ -99,12 +99,10 @@ func Prepare(ctx context.Context, spec Spec) (result Result, err error) {
 		}
 		err = fmt.Errorf("%w; unfinished artifacts retained at %s", err, state)
 	}()
-	for _, directory := range []string{filepath.Join(root, "objects", "sha256"), filepath.Join(root, "manifests")} {
-		if err := os.MkdirAll(directory, 0755); err != nil {
-			return result, err
-		}
+	if err := os.MkdirAll(filepath.Join(root, "objects", "sha256"), 0755); err != nil {
+		return result, err
 	}
-	for _, directory := range []string{filepath.Join(root, "objects"), filepath.Join(root, "manifests"), root} {
+	for _, directory := range []string{filepath.Join(root, "objects"), root} {
 		if err := contract.SyncDir(directory); err != nil {
 			return result, err
 		}
@@ -136,21 +134,11 @@ func Prepare(ctx context.Context, spec Spec) (result Result, err error) {
 	if err := contract.WriteFile(staged, data); err != nil {
 		return result, err
 	}
-	directory := filepath.Join(root, "manifests", digest)
-	if err := os.Mkdir(directory, 0755); err != nil {
-		if os.IsExist(err) {
-			return result, contract.Tag(contract.DataConflict, fmt.Errorf("manifest publication conflict: %w", err))
-		}
-		return result, err
-	}
-	name := filepath.Join(directory, "dataset-manifest.json")
+	name := filepath.Join(root, "dataset-manifest.json")
 	if err := os.Link(staged, name); err != nil {
 		return result, err
 	}
-	if err := contract.SyncDir(directory); err != nil {
-		return result, err
-	}
-	if err := contract.SyncDir(filepath.Dir(directory)); err != nil {
+	if err := contract.SyncDir(root); err != nil {
 		return result, err
 	}
 	result.ManifestPath, result.ManifestSHA256, result.Manifest = name, digest, manifest
@@ -166,14 +154,8 @@ func initialManifest(root string, spec Spec) (contract.Manifest, error) {
 	if err != nil {
 		return contract.Manifest{}, contract.Tag(contract.InputInvalid, err)
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
+	if err := contract.RequireEmpty(root, ".proxy-bench-data.lock"); err != nil {
 		return contract.Manifest{}, err
-	}
-	for _, entry := range entries {
-		if entry.Name() != ".proxy-bench-data.lock" {
-			return contract.Manifest{}, contract.Tag(contract.DataConflict, fmt.Errorf("new dataset requires an empty business directory; found %s", entry.Name()))
-		}
 	}
 	return contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: contract.BlockBytes}, ObjectSize: spec.Size, BaseURL: base, Objects: []contract.Object{}}, nil
 }

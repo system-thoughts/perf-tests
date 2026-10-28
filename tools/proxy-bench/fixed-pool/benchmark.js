@@ -8,7 +8,7 @@ import { summaryOutputs, summaryTrendStats } from './lib/summary.js';
 
 const loadedAt = Date.now();
 const spec = JSON.parse(open(__ENV.WORKER_SPEC));
-const objects = new SharedArray('fixed-pool-objects', () => JSON.parse(open(spec.objects_file.path)));
+const objects = new SharedArray('fixed-pool-objects', () => JSON.parse(open(spec.manifest.path)).objects.map(object => object.url));
 const shard = new SharedArray('fixed-pool-shard', () => JSON.parse(open(spec.shard.path)));
 if (shard.length !== spec.region_count) throw new Error('shard length mismatch');
 if (__VU === 0) console.log(`Plan loaded: shard_regions=${shard.length} objects=${objects.length} elapsed_ms=${Date.now() - loadedAt}`);

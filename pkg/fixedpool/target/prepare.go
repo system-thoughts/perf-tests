@@ -53,13 +53,22 @@ type ObjectResults struct {
 	Objects       []ObjectResult `json:"objects"`
 }
 
+// PreparedTarget accepts the former instance label only when reading evidence.
+// It is omitted by the producer and never participates in target validation.
+type PreparedTarget struct {
+	Ref              string `json:"ref,omitempty"`
+	Proxy            string `json:"proxy"`
+	ExpectedServerIP string `json:"expected_server_ip"`
+	InstanceRef      string `json:"instance_ref,omitempty"`
+}
+
 type Result struct {
 	SchemaVersion  int               `json:"schema_version"`
 	PreparationID  string            `json:"preparation_id"`
 	ManifestSHA256 *string           `json:"manifest_sha256"`
-	IdentitySHA256 *string           `json:"identity_sha256"`
+	IdentitySHA256 *string           `json:"identity_sha256,omitempty"`
 	PieceStrategy  string            `json:"piece_strategy"`
-	Target         *Target           `json:"target"`
+	Target         *PreparedTarget   `json:"target"`
 	Prepare        *Options          `json:"prepare"`
 	Method         string            `json:"method"`
 	StartedAt      string            `json:"started_at"`
@@ -98,26 +107,19 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	digest := contract.Digest(raw)
 	result.ManifestSHA256 = &digest
 	result.ObjectCount = &m.ObjectCount
-	c, identity, err := ReadConfig(s.TargetConfig)
+	c, err := ReadConfig(s.TargetConfig)
 	if err != nil {
 		return result, err
 	}
-	result.IdentitySHA256 = &identity
-	result.Target = &c.Target
+	result.Target = &PreparedTarget{Ref: c.Target.Ref, Proxy: c.Target.Proxy, ExpectedServerIP: c.Target.ExpectedServerIP}
 	result.Prepare = &c.Prepare
 	lock, err := contract.AcquireLock(s.Out, ".prepare.lock")
 	if err != nil {
 		return result, contract.Tag(contract.DataConflict, err)
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
-	entries, err := os.ReadDir(s.Out)
-	if err != nil {
+	if err := contract.RequireEmpty(s.Out, ".prepare.lock"); err != nil {
 		return result, err
-	}
-	for _, entry := range entries {
-		if entry.Name() != ".prepare.lock" {
-			return result, contract.Tag(contract.DataConflict, fmt.Errorf("out must be empty; existing entry %s", entry.Name()))
-		}
 	}
 	client, transport, err := newClient(c)
 	if err != nil {
@@ -130,95 +132,68 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	}
 	var mu sync.Mutex
 	seenTasks := map[string]uint64{}
-	runPhase := func(final bool) {
-		var wait sync.WaitGroup
-		next := 0
-		var stopCause *Issue
-		for range min(c.Prepare.Concurrency, m.ObjectCount) {
-			wait.Go(func() {
-				for {
-					mu.Lock()
-					if stopCause != nil || ctx.Err() != nil || next >= len(m.Objects) {
-						mu.Unlock()
-						return
-					}
-					index := next
-					next++
+	var wait sync.WaitGroup
+	next := 0
+	var stopCause *Issue
+	for range min(c.Prepare.Concurrency, m.ObjectCount) {
+		wait.Go(func() {
+			for {
+				mu.Lock()
+				if stopCause != nil || ctx.Err() != nil || next >= len(m.Objects) {
 					mu.Unlock()
-					o := m.Objects[index]
-					r := &objects.Objects[index]
-					stage := "full_get"
-					var failure error
-					if !final {
-						failure = fullRead(ctx, client, c, o, r)
-						if failure == nil {
-							mu.Lock()
-							if other, exists := seenTasks[*r.TaskID]; exists && other != o.ID {
-								failure = contract.Tag(contract.PrepareFailed, fmt.Errorf("objects %d and %d unexpectedly share task %s", other, o.ID, *r.TaskID))
-							} else {
-								seenTasks[*r.TaskID] = o.ID
-							}
-							mu.Unlock()
-						}
-					}
-					if failure == nil {
-						stage = "range_check"
-						if final {
-							stage = "final_check"
-							r.FinishedCheckAt = nil
-						}
-						failure = rangeCheck(ctx, client, c, o, r, stage)
-					}
+					return
+				}
+				index := next
+				next++
+				mu.Unlock()
+				o := m.Objects[index]
+				r := &objects.Objects[index]
+				stage := "full_get"
+				failure := fullRead(ctx, client, c, o, r)
+				if failure == nil {
 					mu.Lock()
-					if failure != nil {
-						code := contract.ErrorCode(failure)
-						r.Status = StatusFailed
-						if code == Unverified || code == Unsupported || ctx.Err() != nil {
-							r.Status = StatusUnverified
-						}
-						r.Error = &Issue{Code: code, Stage: stage, Message: failure.Error(), ObjectID: &r.ObjectID}
-						if stopCause == nil {
-							stopCause = r.Error
-						}
+					if other, exists := seenTasks[*r.TaskID]; exists && other != o.ID {
+						failure = contract.Tag(contract.PrepareFailed, fmt.Errorf("objects %d and %d unexpectedly share task %s", other, o.ID, *r.TaskID))
 					} else {
-						r.Status = StatusReady
+						seenTasks[*r.TaskID] = o.ID
 					}
 					mu.Unlock()
 				}
-			})
-		}
-		wait.Wait()
-		// These objects had no request in this phase. Do not present them as
-		// additional HTTP failures or obscure which object stopped dispatch.
-		stage := "full_get"
-		if final {
-			stage = "final_check"
-		}
-		for index := next; index < len(m.Objects); index++ {
-			r := &objects.Objects[index]
-			message := fmt.Sprintf("not dispatched for %s: preparation cancelled: %v", stage, ctx.Err())
-			if ctx.Err() == nil && stopCause != nil {
-				message = fmt.Sprintf("not dispatched for %s: object %d failed at %s (%s)", stage, *stopCause.ObjectID, stopCause.Stage, stopCause.Code)
+				if failure == nil {
+					stage = "range_check"
+					failure = rangeCheck(ctx, client, c, o, r, stage)
+				}
+				mu.Lock()
+				if failure != nil {
+					code := contract.ErrorCode(failure)
+					r.Status = StatusFailed
+					if code == Unverified || code == Unsupported || ctx.Err() != nil {
+						r.Status = StatusUnverified
+					}
+					r.Error = &Issue{Code: code, Stage: stage, Message: failure.Error(), ObjectID: &r.ObjectID}
+					if stopCause == nil {
+						stopCause = r.Error
+					}
+				} else {
+					r.Status = StatusReady
+				}
+				mu.Unlock()
 			}
-			r.Error = &Issue{Code: Unverified, Stage: "target_prepare", Message: message, ObjectID: &r.ObjectID}
-		}
+		})
 	}
-	runPhase(false)
-	allReady := func() bool {
-		for _, r := range objects.Objects {
-			if r.Status != StatusReady {
-				return false
-			}
+	wait.Wait()
+	// These objects had no request. Do not present them as
+	// additional HTTP failures or obscure which object stopped dispatch.
+	stage := "full_get"
+	for index := next; index < len(m.Objects); index++ {
+		r := &objects.Objects[index]
+		message := fmt.Sprintf("not dispatched for %s: preparation cancelled: %v", stage, ctx.Err())
+		if ctx.Err() == nil && stopCause != nil {
+			message = fmt.Sprintf("not dispatched for %s: object %d failed at %s (%s)", stage, *stopCause.ObjectID, stopCause.Stage, stopCause.Code)
 		}
-		return ctx.Err() == nil
+		r.Error = &Issue{Code: Unverified, Stage: "target_prepare", Message: message, ObjectID: &r.ObjectID}
 	}
-	if allReady() {
-		for i := range objects.Objects {
-			objects.Objects[i].Status = StatusUnverified
-			objects.Objects[i].FinishedCheckAt = nil
-		}
-		runPhase(true)
-	}
+
 	err = summarize(ctx, &objects, &result)
 	result.EndedAt = timestamp()
 	data, encodeErr := contract.Encode(objects)

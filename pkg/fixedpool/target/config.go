@@ -24,7 +24,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -46,10 +45,9 @@ const (
 )
 
 type Target struct {
-	Ref              string `json:"ref"`
+	Ref              string `json:"ref,omitempty"`
 	Proxy            string `json:"proxy"`
 	ExpectedServerIP string `json:"expected_server_ip"`
-	InstanceRef      string `json:"instance_ref"`
 }
 
 type Options struct {
@@ -59,47 +57,43 @@ type Options struct {
 }
 
 type Config struct {
-	SchemaVersion int              `json:"schema_version"`
-	Target        Target           `json:"target"`
-	ProxyRulesRef contract.FileRef `json:"proxy_rules_ref"`
-	Prepare       Options          `json:"prepare"`
+	SchemaVersion int     `json:"schema_version"`
+	Target        Target  `json:"target"`
+	Prepare       Options `json:"prepare"`
 }
 
-type ProxyRules struct {
-	SchemaVersion       int      `json:"schema_version"`
-	FilteredQueryParams []string `json:"filtered_query_params"`
-	RewriteURL          bool     `json:"rewrite_url"`
-	UseTLS              bool     `json:"use_tls"`
-}
-
-func ReadConfig(name string) (Config, string, error) {
-	var c Config
+func ReadConfig(name string) (c Config, err error) {
+	defer func() {
+		if err != nil {
+			err = contract.Input("TARGET_CONFIG", name, err)
+		}
+	}()
 	raw, err := os.ReadFile(name)
 	if err != nil {
-		return c, "", contract.Tag(contract.InputInvalid, err)
+		return c, contract.Tag(contract.InputInvalid, err)
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var node yaml.Node
 	if err := decoder.Decode(&node); err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
+		return c, contract.Tag(contract.ContractMismatch, err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
+		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
 	}
 	value, err := yamlValue(&node)
 	if err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
+		return c, contract.Tag(contract.ContractMismatch, err)
 	}
 	fields, ok := value.(map[string]any)
 	if !ok {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
+		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
 	}
 	defaults := map[string]any{"concurrency": uint64(1), "request_timeout_ms": uint64(1800000), "ready_timeout_ms": uint64(60000)}
 	if opts, exists := fields["prepare"]; exists {
 		options, ok := opts.(map[string]any)
 		if !ok {
-			return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("prepare must be a mapping"))
+			return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("prepare must be a mapping"))
 		}
 		for key, value := range defaults {
 			if _, exists := options[key]; !exists {
@@ -117,57 +111,26 @@ func ReadConfig(name string) (Config, string, error) {
 		err = validateConfig(c)
 	}
 	if err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
+		return c, contract.Tag(contract.ContractMismatch, err)
 	}
-	rulesPath := c.ProxyRulesRef.Path
-	if !filepath.IsAbs(rulesPath) {
-		rulesPath = filepath.Join(filepath.Dir(name), rulesPath)
-	}
-	raw, err = os.ReadFile(rulesPath)
-	if err != nil {
-		return c, "", contract.Tag(contract.InputInvalid, err)
-	}
-	if contract.Digest(raw) != c.ProxyRulesRef.SHA256 {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("proxy rules SHA-256 mismatch"))
-	}
-	var rules ProxyRules
-	if err := contract.Decode(raw, &rules); err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
-	}
-	if rules.SchemaVersion != 1 || rules.RewriteURL || rules.UseTLS {
-		return c, "", contract.Tag(Unsupported, fmt.Errorf("require proxy rules schema 1, rewrite_url=false and use_tls=false"))
-	}
-	seen := map[string]bool{}
-	for _, key := range rules.FilteredQueryParams {
-		if strings.TrimSpace(key) == "" || seen[key] {
-			return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("invalid filtered_query_params"))
-		}
-		seen[key] = true
-	}
-	identity, err := json.Marshal(struct {
-		Mode             string `json:"mode"`
-		TaskType         string `json:"task_type"`
-		PieceStrategy    string `json:"piece_strategy"`
-		ProxyRulesSHA256 string `json:"proxy_rules_sha256"`
-	}{"url-v1", "standard", "auto", c.ProxyRulesRef.SHA256})
-	if err != nil {
-		return c, "", err
-	}
-	return c, contract.Digest(identity), nil
+	return c, nil
 }
 
 func validateConfig(c Config) error {
 	u, err := url.Parse(c.Target.Proxy)
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(c.Target.Proxy, "#") {
-		return fmt.Errorf("target.proxy must be an HTTP proxy origin without credentials or path/query/fragment")
+		return fmt.Errorf("target.proxy: expected an HTTP proxy origin without credentials or path/query/fragment; actual %q", c.Target.Proxy)
 	}
 	if u.Port() != "" {
 		if n, err := strconv.ParseUint(u.Port(), 10, 16); err != nil || n == 0 {
-			return fmt.Errorf("invalid proxy port")
+			return fmt.Errorf("target.proxy: invalid port in %q", c.Target.Proxy)
 		}
 	}
-	if c.SchemaVersion != 1 || c.Target.Ref == "" || c.Target.InstanceRef == "" || net.ParseIP(c.Target.ExpectedServerIP) == nil || c.ProxyRulesRef.Path == "" || !contract.ValidDigest(c.ProxyRulesRef.SHA256) {
-		return fmt.Errorf("invalid schema, target identity/IP or proxy rules reference")
+	if c.SchemaVersion != 1 {
+		return fmt.Errorf("schema_version: expected 1, actual %d", c.SchemaVersion)
+	}
+	if net.ParseIP(c.Target.ExpectedServerIP) == nil {
+		return fmt.Errorf("target.expected_server_ip: expected an IP address, actual %q", c.Target.ExpectedServerIP)
 	}
 	if c.Prepare.Concurrency == 0 || c.Prepare.Concurrency > uint64(^uint(0)>>1) || c.Prepare.Concurrency > contract.MaxSafeInteger {
 		return fmt.Errorf("prepare.concurrency must be a positive native integer")

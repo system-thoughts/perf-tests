@@ -46,49 +46,27 @@ func load(ctx context.Context, name string, manifest contract.Manifest, manifest
 func loadSelected(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32, selected *uint64) (p contract.Plan, raw []byte, actual uint64, err error) {
 	raw, err = os.ReadFile(name)
 	if err != nil {
-		return p, nil, 0, err
+		return p, nil, 0, contract.Input("PLAN", name, err)
 	}
 	if err := contract.Decode(raw, &p); err != nil {
-		return p, nil, 0, fmt.Errorf("request-plan: %w", err)
+		return p, nil, 0, contract.Input("PLAN", name, err)
 	}
 	if p.SchemaVersion != 1 || p.Algorithm != contract.OrderAlgorithm || p.Seed != contract.OrderSeed || p.ManifestSHA256 != manifestSHA {
-		return p, nil, 0, fmt.Errorf("request-plan schema, algorithm, seed or manifest mismatch")
+		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("schema/algorithm/seed or manifest_sha256 mismatch: expected manifest %s, actual %s", manifestSHA, p.ManifestSHA256))
 	}
 	perObject, total, err := Geometry(manifest.ObjectSize, manifest.ObjectCount, p.RangeBytes, p.WorkerCount)
 	if err != nil {
 		return p, nil, 0, err
 	}
 	if p.RegionsPerObject != perObject || p.RegionCount != total || uint64(len(p.Shards)) != p.WorkerCount {
-		return p, nil, 0, fmt.Errorf("request-plan region metadata mismatch")
-	}
-	if p.ObjectsFile.Path != "object-urls.json" || !contract.ValidDigest(p.ObjectsFile.SHA256) {
-		return p, nil, 0, fmt.Errorf("invalid objects_file reference")
+		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("region metadata mismatch: expected regions_per_object=%d region_count=%d worker_count=%d, actual %d/%d/%d", perObject, total, p.WorkerCount, p.RegionsPerObject, p.RegionCount, len(p.Shards)))
 	}
 	if selected != nil && *selected >= p.WorkerCount {
-		return p, nil, 0, fmt.Errorf("WORKER_ID outside plan worker_count")
+		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("WORKER_ID %d outside worker_count %d", *selected, p.WorkerCount))
 	}
 	directory := filepath.Dir(name)
-	objects, err := os.ReadFile(filepath.Join(directory, "object-urls.json"))
-	if err != nil {
-		return p, nil, 0, err
-	}
-	if contract.Digest(objects) != p.ObjectsFile.SHA256 {
-		return p, nil, 0, fmt.Errorf("object-urls.json SHA-256 mismatch")
-	}
-	var urls []string
-	if err := contract.Decode(objects, &urls); err != nil {
-		return p, nil, 0, err
-	}
-	if len(urls) != len(manifest.Objects) {
-		return p, nil, 0, fmt.Errorf("object-urls.json count mismatch")
-	}
-	for i, url := range urls {
-		if url != manifest.Objects[i].URL {
-			return p, nil, 0, fmt.Errorf("object-urls.json URL %d mismatch", i)
-		}
-	}
-	actual = uint64(len(raw) + len(objects))
-	// Only publication supplies the producer's permutation. Reuse and worker
+	actual = uint64(len(raw))
+	// Only publication supplies the producer's permutation. Consumer and worker
 	// startup check artifact integrity without repeating the generation algorithm.
 	var seen []byte
 	if expected != nil {
@@ -103,7 +81,7 @@ func loadSelected(ctx context.Context, name string, manifest contract.Manifest, 
 		}
 		length, err := checkShard(ctx, filepath.Join(directory, filepath.FromSlash(shard.Path)), shard, total, seen, expected, p.WorkerCount)
 		if err != nil {
-			return p, nil, 0, fmt.Errorf("shard %d: %w", worker, err)
+			return p, nil, 0, contract.Input(fmt.Sprintf("PLAN.shards[%d]", worker), filepath.Join(directory, filepath.FromSlash(shard.Path)), err)
 		}
 		actual += length
 	}
@@ -166,7 +144,7 @@ func checkShard(ctx context.Context, name string, shard contract.Shard, total ui
 		return 0, fmt.Errorf("unexpected data after shard array")
 	}
 	if count != shard.RegionCount || hex.EncodeToString(hash.Sum(nil)) != shard.SHA256 {
-		return 0, fmt.Errorf("shard count or SHA-256 mismatch")
+		return 0, fmt.Errorf("shard count/sha256 mismatch: expected count=%d sha256=%s, actual count=%d sha256=%s", shard.RegionCount, shard.SHA256, count, hex.EncodeToString(hash.Sum(nil)))
 	}
 	return uint64(info.Size()), nil
 }

@@ -48,10 +48,15 @@ func Encode(value any) ([]byte, error) {
 
 // Decode rejects ambiguity before typed decoding: duplicate keys, nulls, missing
 // fields (including zero-valued required fields), unknown fields and extra values.
-func Decode(data []byte, value any) error {
+func Decode(data []byte, value any) error { return decode(data, value, false) }
+
+// DecodeRecord permits explicit unknown pointer values in preparation records.
+func DecodeRecord(data []byte, value any) error { return decode(data, value, true) }
+
+func decode(data []byte, value any, record bool) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := checkValue(decoder, false); err != nil {
+	if err := checkValue(decoder, record, "$"); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
@@ -62,16 +67,16 @@ func Decode(data []byte, value any) error {
 	if err := decoder.Decode(value); err != nil {
 		return err
 	}
-	return requiredFields(data, reflect.TypeOf(value).Elem(), "$")
+	return requiredFields(data, reflect.TypeOf(value).Elem(), "$", record)
 }
 
-func checkValue(decoder *json.Decoder, nullable bool) error {
+func checkValue(decoder *json.Decoder, nullable bool, location string) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
 	if token == nil && !nullable {
-		return fmt.Errorf("null is not allowed")
+		return fmt.Errorf("%s: null is not allowed", location)
 	}
 	delimiter, ok := token.(json.Delim)
 	if !ok {
@@ -87,16 +92,16 @@ func checkValue(decoder *json.Decoder, nullable bool) error {
 			}
 			name, ok := key.(string)
 			if !ok || seen[name] {
-				return fmt.Errorf("duplicate or invalid JSON key %q", key)
+				return fmt.Errorf("%s: duplicate or invalid JSON key %q", location, key)
 			}
 			seen[name] = true
-			if err := checkValue(decoder, nullable); err != nil {
+			if err := checkValue(decoder, nullable, location+"."+name); err != nil {
 				return err
 			}
 		}
 	case '[':
-		for decoder.More() {
-			if err := checkValue(decoder, nullable); err != nil {
+		for index := 0; decoder.More(); index++ {
+			if err := checkValue(decoder, nullable, fmt.Sprintf("%s[%d]", location, index)); err != nil {
 				return err
 			}
 		}
@@ -107,77 +112,15 @@ func checkValue(decoder *json.Decoder, nullable bool) error {
 	return err
 }
 
-func requiredFields(data []byte, typ reflect.Type, location string) error {
-	switch typ.Kind() {
-	case reflect.Struct:
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(data, &fields); err != nil {
-			return err
-		}
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			name := strings.Split(field.Tag.Get("json"), ",")[0]
-			if name == "-" || !field.IsExported() {
-				continue
-			}
-			if name == "" {
-				name = field.Name
-			}
-			raw, ok := fields[name]
-			if !ok {
-				return fmt.Errorf("%s.%s: required field missing", location, name)
-			}
-			if err := requiredFields(raw, field.Type, location+"."+name); err != nil {
-				return err
-			}
-			delete(fields, name)
-		}
-		// encoding/json folds field names even with DisallowUnknownFields.
-		if len(fields) != 0 {
-			return fmt.Errorf("%s: unknown or case-aliased JSON field", location)
-		}
-	case reflect.Slice, reflect.Array:
-		var entries []json.RawMessage
-		if err := json.Unmarshal(data, &entries); err != nil {
-			return err
-		}
-		for i, entry := range entries {
-			if err := requiredFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// DecodeRecord applies the same ambiguity checks to execution/preparation records,
-// where pointer fields explicitly represent unknown values. Input contracts keep
-// using Decode, which rejects null everywhere.
-func DecodeRecord(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := checkValue(decoder, true); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return fmt.Errorf("expected end of JSON")
-	}
-	decoder = json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	return recordFields(data, reflect.TypeOf(value).Elem(), "$")
-}
-func recordFields(data []byte, typ reflect.Type, location string) error {
+func requiredFields(data []byte, typ reflect.Type, location string, record bool) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		if typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Interface {
+		if record && (typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Interface) {
 			return nil
 		}
 		return fmt.Errorf("%s: null is not allowed", location)
 	}
 	if typ.Kind() == reflect.Pointer {
-		return recordFields(data, typ.Elem(), location)
+		return requiredFields(data, typ.Elem(), location, record)
 	}
 	switch typ.Kind() {
 	case reflect.Struct:
@@ -189,7 +132,7 @@ func recordFields(data []byte, typ reflect.Type, location string) error {
 			field := typ.Field(i)
 			tag := strings.Split(field.Tag.Get("json"), ",")
 			name := tag[0]
-			if !field.IsExported() || name == "-" {
+			if name == "-" || !field.IsExported() {
 				continue
 			}
 			if name == "" {
@@ -202,14 +145,14 @@ func recordFields(data []byte, typ reflect.Type, location string) error {
 				}
 				return fmt.Errorf("%s.%s: required field missing", location, name)
 			}
-			if err := recordFields(raw, field.Type, location+"."+name); err != nil {
+			if err := requiredFields(raw, field.Type, location+"."+name, record); err != nil {
 				return err
 			}
 			delete(fields, name)
 		}
-		// Enforce exact wire names for nullable records as well.
-		if len(fields) != 0 {
-			return fmt.Errorf("%s: unknown or case-aliased JSON field", location)
+		// encoding/json folds field names even with DisallowUnknownFields.
+		for name := range fields {
+			return fmt.Errorf("%s: unknown or case-aliased JSON field %q", location, name)
 		}
 	case reflect.Slice, reflect.Array:
 		var entries []json.RawMessage
@@ -217,7 +160,7 @@ func recordFields(data []byte, typ reflect.Type, location string) error {
 			return err
 		}
 		for i, entry := range entries {
-			if err := recordFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i)); err != nil {
+			if err := requiredFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i), record); err != nil {
 				return err
 			}
 		}

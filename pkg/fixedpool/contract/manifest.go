@@ -19,20 +19,38 @@ package contract
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // ReadManifest hashes and parses the same input bytes; it never opens object files.
 func ReadManifest(name string) (Manifest, []byte, error) {
-	var manifest Manifest
 	data, err := os.ReadFile(name)
 	if err != nil {
-		return manifest, nil, Tag(InputInvalid, err)
+		return Manifest{}, nil, Input("MANIFEST", name, Tag(InputInvalid, err))
 	}
-	if err := Decode(data, &manifest); err != nil {
-		return manifest, nil, Tag(ContractMismatch, fmt.Errorf("manifest: %w", err))
-	}
-	if err := ValidateManifest(manifest); err != nil {
-		return manifest, nil, Tag(ContractMismatch, err)
+	manifest, err := ParseManifest(data)
+	if err != nil {
+		return manifest, nil, Input("MANIFEST", name, err)
 	}
 	return manifest, data, nil
+}
+
+func ParseManifest(data []byte) (Manifest, error) {
+	var manifest Manifest
+	err := Decode(data, &manifest)
+	if err == nil {
+		err = ValidateManifest(manifest)
+	}
+	if err != nil {
+		return manifest, Tag(ContractMismatch, err)
+	}
+	return manifest, nil
+}
+
+// Input preserves error classification while identifying the consumed file.
+func Input(input, path string, err error) error {
+	if absolute, absErr := filepath.Abs(path); absErr == nil {
+		path = absolute
+	}
+	return fmt.Errorf("%s %q: %w", input, path, err)
 }

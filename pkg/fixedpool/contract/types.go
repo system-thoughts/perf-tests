@@ -72,6 +72,5 @@ type Plan struct {
 	Algorithm        string  `json:"algorithm"`
 	Seed             string  `json:"seed"`
 	WorkerCount      uint64  `json:"worker_count"`
-	ObjectsFile      FileRef `json:"objects_file"`
 	Shards           []Shard `json:"shards"`
 }

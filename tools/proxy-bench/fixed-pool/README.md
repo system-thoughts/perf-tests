@@ -1,228 +1,279 @@
-# Fixed-pool Range benchmark
+# Fixed-pool proxy benchmark
 
-Fixed-pool adds a deterministic Range workload to proxy-bench. Prepare immutable
-objects, generate an access plan, prepare the chosen Dragonfly Seed, then run one
-or more independent workers. k6 supplies request scheduling and native metrics;
-workers do not prepare data or coordinate other workers during measurement.
+Measure a Dragonfly Seed with a deterministic object pool and a reusable Range
+access plan. Each worker visits its assigned regions in a fixed order, loops the
+same shard and uses k6's constant arrival rate. Reuse the inputs for repeated
+rounds or change only RATE to offer more load. This tool does not search for a
+maximum QPS, clear host caches, manage experiments or decide whether results meet
+an application's latency target.
 
-Use matching `proxy-bench-tools`, `proxy-bench` and Kubernetes material from the
-same development branch/build. `fixed_pool_refactor` uses the interface below;
-`nydus_hot_dev` retains the previous preparation commands and plan format. These
-are development interfaces: the new branch does not provide old command aliases
-or an old-plan converter. The existing file-server image is shared by both lines.
+## Deliverables and prerequisites
 
-## Deliverables and entrypoints
-
-| Deliverable | What runs there |
+| Deliverable | Responsibility |
 | --- | --- |
 | proxy-bench-tools image | `proxy-bench-prepare data`, `plan`, `seed-cache` |
-| proxy-bench image | k6, fixed-pool scripts and internal worker-support; the original proxy-bench entrypoint remains |
-| file-server image | Existing Nginx GET/HEAD/Range server, with generated objects mounted read-only |
-| [deploy/](deploy/) | Matching Kubernetes templates; the current handoff/report workflow is retained during this refactor |
+| proxy-bench image | Original modes and the fixed-pool worker entrypoint |
+| Existing dragonflyoss/file-server image | Nginx HTTP object source, including HEAD and Range |
+| [deploy/](deploy/README.md) | Ordinary editable Kubernetes examples; no env files or rendering helper |
 
-Each preparation action runs independently. There is no all-in-one command,
-experiment workspace, latest-plan lookup, cache-clearing action or file distributor.
-Select input/output locations yourself. All preparation actions require a new or
-empty business output directory; nonempty output is refused, never reused or
-removed automatically. To reuse a valid artifact, pass it directly to its consumer.
-To regenerate, choose a new location or explicitly clean the old one yourself.
+Use tools, worker and YAML from the same build. The fork's development workflow
+publishes the first two images to GHCR and supplies a matching deploy bundle;
+`build-info.txt` lists the image digests. The file-server image remains the reused
+Docker Hub image. Development branches have separate build-specific releases.
+These examples do not change upstream's release process.
 
-For local development:
+The main path needs kubectl, usable storage and an existing Dragonfly Seed HTTP
+proxy. No Go installation or host preparation executable is required. The source
+URL must be reachable from the Seed, and the preparation/worker Pods must reach
+that proxy. Keep enough Seed capacity and retention for the entire pool; ready
+records do not monitor subsequent eviction, restarts or external changes.
+
+## One complete Kubernetes path
+
+Work on local copies of the six deploy YAML files. They use namespace `benchmark`,
+source hostname `source-node`, load hostname `load-node`, two sample PVC names and
+small functional settings: B=4 MiB, N=2, R=64 KiB, W=1, RATE=10 and DURATION=30s.
+These are examples, not performance recommendations. Edit the following first:
+
+- Replace image placeholders with the matching tools/worker image references.
+- Set namespace, node names, storage capacity/class and any existing PVC references.
+- Set the final source URL in data.yaml. `cluster.local` is an example DNS domain;
+  an external Seed may need an independently provided NodePort or other endpoint.
+- Set the proxy and expected server IP once in seed.yaml's target ConfigMap.
+  The former is the connection address; the latter checks the responding Seed.
+- Choose data size/count, Range size, shard count, rate and round identifier.
+  B must be divisible by R. Review worker resources for the intended load.
+
+### 1. Generate objects on the source volume
+
+Create the namespace if needed. Apply storage.yaml only when creating new PVCs;
+with existing storage, edit the Job/server references instead. An omitted
+storageClassName uses the cluster default; `""` explicitly requests no class.
 
 ```bash
-make build-proxy-bench-prepare build-proxy-bench-worker-support
-./bin/proxy-bench-prepare --help
-./bin/proxy-bench-prepare plan --help
+kubectl create namespace benchmark
+kubectl apply -f deploy/storage.yaml
+kubectl apply -f deploy/data.yaml
+kubectl -n benchmark get job fixed-pool-data --watch
+kubectl -n benchmark logs job/fixed-pool-data
 ```
 
-`make build-proxy-bench-tools` builds both executables for linux/amd64 and
-linux/arm64. Their Dockerfiles are [tools](../Dockerfile.tools) and
-[worker](../Dockerfile). Tests and fixture vectors are not copied into the images.
+For each watch, press Ctrl+C after Complete or Failed, then fetch the log.
+Do not continue a failed action. Watching first also avoids requesting logs while
+the container is still starting. Continue after the Job succeeds. Do not only wait for Complete while ignoring a
+Failed condition; inspect Pod events for scheduling, image and mount failures.
+The command prints its JSON result and diagnostics to the Pod log. Objects and
+`dataset-manifest.json` are generated under `/data/dataset` on the source PVC.
+No reports directory or separate stdout report is created.
 
-## 1. Generate source objects
-
-Inside a tools container with writable source storage:
+### 2. Publish the object source
 
 ```bash
-proxy-bench-prepare data --root /data/dataset \
-  --base-url http://file-server.benchmark.svc.cluster.local \
-  --size 65536 --count 2
+kubectl apply -f deploy/file-server.yaml
+kubectl -n benchmark rollout status statefulset/fixed-pool-source
 ```
 
-| Option | Default / purpose |
+Only `dataset/objects` is mounted under Nginx's HTTP root. The manifest is not
+published over HTTP or copied by this workload. A server restart does not generate
+objects. Recreate the server Pod after replacing its mounted dataset directory;
+repeated rounds and changes to R/W/RATE do not require it. Pod Ready does not
+certify that the source is reachable from the Seed.
+
+### 3. Provide the chosen manifest as an input file
+
+Obtain the manifest at the generation result's path and put it in storage readable
+by plan, Seed preparation and worker. The examples read
+`/inputs/dataset-manifest.json` from the metadata PVC. Change those paths/mounts
+when using another location. The tool does not fetch, distribute or select files.
+
+For example, an operator can mount the source PVC in a temporary Pod, copy the
+manifest to the workstation, then mount the metadata PVC and copy it there.
+Use an existing storage access method if available. A minimal optional access Pod
+is shown below; it is an environment operation, not an additional delivered tool.
+Set its image to the same tools image, node to the volume's node and claim to the
+volume to access. It mounts the selected volume at `/files`.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fixed-pool-files
+  namespace: benchmark
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  nodeSelector:
+    kubernetes.io/hostname: source-node
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: files
+      image: REPLACE_WITH_TOOLS_IMAGE
+      command: ["/bin/sleep", "3600"]
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: files
+          mountPath: /files
+  volumes:
+    - name: files
+      persistentVolumeClaim:
+        claimName: fixed-pool-source
+```
+
+Save it as access.yaml. First use the source volume:
+
+```bash
+kubectl apply -f access.yaml
+kubectl -n benchmark wait --for=condition=Ready pod/fixed-pool-files --timeout=120s
+kubectl -n benchmark cp fixed-pool-files:/files/dataset/dataset-manifest.json ./dataset-manifest.json
+kubectl -n benchmark delete pod fixed-pool-files --wait=true
+```
+
+Edit access.yaml's claim to `fixed-pool-inputs` and node to the metadata volume's
+node, then upload the selected file. No object bodies pass through this path.
+
+```bash
+kubectl apply -f access.yaml
+kubectl -n benchmark wait --for=condition=Ready pod/fixed-pool-files --timeout=120s
+kubectl -n benchmark cp --no-preserve ./dataset-manifest.json fixed-pool-files:/files/dataset-manifest.json
+kubectl -n benchmark delete pod fixed-pool-files --wait=true
+```
+
+This example has real copy and temporary-Pod costs, including on a single worker.
+It is not a requirement to use this transfer method or directory layout.
+
+### 4. Generate the access plan and prepare the Seed independently
+
+```bash
+kubectl apply -f deploy/plan.yaml
+kubectl -n benchmark get job fixed-pool-plan --watch
+kubectl -n benchmark logs job/fixed-pool-plan
+kubectl apply -f deploy/seed.yaml
+kubectl -n benchmark get job fixed-pool-seed --watch
+kubectl -n benchmark logs job/fixed-pool-seed
+```
+
+Plan generation reads the chosen manifest and R/W, then publishes
+`/inputs/plan/request-plan.json` and `shards/`. It needs neither source access nor
+a ready Seed. Seed preparation does not read the plan. It performs each object's
+full GET and verifies size/SHA-256 and responding identity, then an immediate small
+Range. Bodies are streamed, not saved by the preparation Pod. Success publishes
+`/inputs/preparation/target-preparation.json` with `status=ready` and its object
+evidence. This proves the preparation's data checks, not background task quiescence
+or the absence of every possible later cold fetch.
+
+Both commands require a new or empty output directory. They neither choose old
+results nor overwrite them. Failed preparation records may exist, but cannot be
+used as ready input. Fix the reported problem and rerun only the failed action,
+with a new/empty output; update the worker's selected path when needed. No default
+Seed-cache deletion or plan regeneration accompanies that retry.
+
+### 5. Run and read the native results
+
+```bash
+kubectl apply -f deploy/worker.yaml
+kubectl -n benchmark get job fixed-pool-worker --watch
+kubectl -n benchmark logs job/fixed-pool-worker
+```
+
+The worker checks its explicit inputs, then starts k6. Missing, damaged or mismatched
+inputs prevent pressure and identify the input/path in the error. Logs identify
+the actual B/N, R/W, manifest/plan and target; a valid older dataset is not rejected
+because the operator may have intended another one.
+
+The shared proxy-bench text report shows requests/QPS, failure rate, latency
+percentiles, throughput and consumed plan items. Four prefixed JSON records retain
+run/worker facts, effective engine options, native summary and raw exit. There is
+no separate report command or required output volume. Job Complete means the
+process completed; it does not mean requests succeeded or the experiment is valid.
+No default 1% failure threshold is installed by fixed-pool. k6's own configured
+thresholds and exit codes still apply.
+
+Save logs if useful, during execution or afterwards. This is optional:
+
+```bash
+kubectl -n benchmark logs -f job/fixed-pool-worker > worker.log
+```
+
+## Reuse, changes and multiple workers
+
+| Change | What to execute |
 | --- | --- |
-| `--root` | Required, new/empty object storage directory |
-| `--base-url` | Required HTTP source base reachable from the Seed; no credentials, query or fragment |
-| `--size` | Required positive decimal bytes per object (B) |
-| `--count` | Required positive decimal object count (N) |
-| `--generation-workers` | 1; optional generation concurrency, without changing bytes or identities |
+| Same workload, another round | New RUN_ID; delete/recreate the worker Job, retaining valid inputs |
+| Increase RATE | Only change worker rate and round; no new dataset/plan/preparation |
+| Change R or W | Independent plan Job with a new/empty output; point worker at that plan |
+| Retry failed Seed preparation | Correct the cause, use a new/empty preparation output and rerun only Seed |
+| Change dataset B/N or source URLs | Explicit new data and matching plan/preparation; publish the selected source |
+| Change actual target | Prepare that target and select its matching evidence |
 
-The command generates deterministic bytes and computes each object's SHA-256.
-Objects are published as `objects/sha256/<digest>`; the completed manifest is
-`ROOT/dataset-manifest.json`. Its `objects[]` is ordered by object_id and records
-URL, relative path, size and digest. B/N and URLs belong to this manifest, not the
-plan or worker configuration. No source objects are baked into a new image.
-Use a source hostname/address that the worker actually proxies: k6's Go transport
-bypasses literal localhost/loopback origins even with HTTP_PROXY. URL acceptance
-by data preparation does not prove the later measurement uses the Seed.
+Default names describe one deployment, not a one-per-namespace tool restriction.
+For another set use a different namespace or update resource names, selectors,
+volume/config references and source URLs. Updating a ConfigMap does not rerun a
+Job; apply the config before creating the execution that needs it. Do not rely on
+live configuration changes during a measurement.
 
-Mount `objects/` at the corresponding Nginx HTTP path, using the existing
-[source bundle](deploy/source/README.md). The manifest is published only after all
-objects succeed. Failure retains unfinished state and reports its path; do not
-adopt it as a completed dataset. The command's JSON result on stdout returns
-`manifest.path` and `manifest.sha256` on success, otherwise `manifest: null`.
+For W workers, generate one W-shard plan. Each worker receives the same manifest,
+public plan, target and ready evidence, plus its own shard. Use the same total
+RATE/RUN_ID and different WORKER_ID values. Storage/path choices and startup/log
+collection are the operator's responsibility. Suitable shared storage is optional;
+with node-local copies, transfer metadata explicitly, retaining relative shard
+and evidence paths. Do not copy source bodies to workers. To copy directory
+contents, create the destination parent first and distinguish `dir` from `dir/.`.
 
-## 2. Generate an access plan
+Each process independently selects its shard and assigned rate. It does not wait
+for peers, compensate for a failed peer or aggregate percentiles. Check actual
+execution overlap. Sum counts/rates only over compatible windows; per-worker P99
+values cannot be averaged to obtain an overall P99.
 
-Only the manifest is needed; object bodies and the Seed need not be accessible:
+## Preparation CLI and optional development
+
+The same tools image contains one executable and three independent actions:
 
 ```bash
+proxy-bench-prepare data --root /data/dataset --size 4194304 --count 2 \
+  --base-url http://source.example
 proxy-bench-prepare plan --manifest /inputs/dataset-manifest.json \
-  --range 16384 --workers 2 --out /inputs/plan
-```
-
-| Option | Default / purpose |
-| --- | --- |
-| `--manifest` | Required path to the selected completed data manifest |
-| `--range` | Required positive decimal Range length R; B must be divisible by R |
-| `--workers` | 1; number of independent worker shards W, between 1 and total regions M |
-| `--out` | Required new/empty output for this plan, not a container for historical plans |
-| `--memory-budget` | Omitted: no memory-budget gate; an explicit value must be positive bytes |
-| `--file-budget` | Omitted: no file-budget gate; an explicit value must be positive bytes |
-
-The output contains `request-plan.json` and `shards/<worker_id>.json` (plus
-internal writer state). No URL-list copy is generated. The descriptor binds the
-manifest digest and records R, region count, algorithm/seed, W and each shard's
-path, digest and count. Shards contain global region numbers. URLs remain in the
-manifest. The descriptor is published last; incomplete output is not a valid plan.
-
-The producer checks fixed order, uniqueness and coverage before publishing.
-Consumers check the descriptor and selected shard's reference, digest, number,
-count and bounds; they do not regenerate the full permutation. A worker need not
-have other workers' shard files. Preserve relative references when moving a plan.
-
-Changing R or W requires another plan at a location you choose. Changing only
-RATE or DURATION does not. Retrying the generator at an existing output fails,
-even for identical inputs; directly select that plan to reuse it.
-
-Plan budgets constrain preparation, not each load generator. No remote resource
-probe is performed. For manifest bytes D, the conservative estimates are:
-
-- memory: `4M + ceil(M/8) + 2D + 512W + 64MiB`;
-- files: `11M + 512W + 1MiB` (the URL copy is no longer stored).
-
-Preflight also checks output free space; an explicit file budget is checked again
-against actual plan bytes before publication. Estimates cannot prevent every OOM
-or concurrent disk-space change. Worker initialization and VU costs need separate
-calibration. Neither budgets nor invalid R cause automatic workload resizing.
-
-## 3. Prepare the selected Seed
-
-Provide one [target-config.yaml](examples/target-config.yaml). The required target
-fields are `proxy` (HTTP proxy origin) and `expected_server_ip` (daemon's reported
-serving IP, potentially different from a Service address). `target.ref` is an
-optional display name and is not a validity gate. No instance label, proxy-rules
-file or manually calculated rule digest is required. Removing declarations does
-not add support for URL rewriting, HTTPS sources or query-dependent task identity.
-
-```bash
+  --range 65536 --workers 1 --out /inputs/plan
 proxy-bench-prepare seed-cache --manifest /inputs/dataset-manifest.json \
-  --target-config /inputs/target-config.yaml --out /inputs/preparation
+  --target-config /config/target-config.yaml --out /inputs/preparation
 ```
 
-Optional `prepare` fields default to concurrency 1, request_timeout_ms 1800000,
-and ready_timeout_ms 60000. Each object is read fully through the chosen proxy
-and checked for status, task/serving identity, length and SHA-256; one immediate
-prefix Range then checks status 206, identity, Content-Range, length and bytes.
-There is no second pool-wide Range pass and no upload gRPC check.
+These are container commands. Select the executable with your container runtime;
+mount the required directories. A host binary is optional, not part of the normal
+Kubernetes path. `--help` on each action lists its options.
 
-The finished response header is not a readiness gate. Only retryable Range
-transport failures get up to three attempts (100/500ms backoff), sharing the
-ready-time budget; full GET and data/identity errors are not retried. Final failure
-stops new dispatch, leaves in-flight work bounded, and prevents pool readiness.
+For direct CLI use, see the [target configuration example](examples/target-config.yaml).
+The Kubernetes path uses the target ConfigMap in seed.yaml instead.
 
-The producer writes `target-preparation.json` plus `target-object-results.json`.
-The former records selected manifest, target, method, effective prepare settings,
-status and evidence reference; the latter retains per-object observations and
-errors. `finished_check_at` is the historical name for the successful immediate
-Range time, not Dragonfly's task completion time. Failed preparation can also
-produce these files: existence is not proof of `status: ready`.
-
-Ready proves this preparation's content/Range checks under sufficient capacity,
-cache retention and stable-target conditions. It is not an independent final
-snapshot of all local pieces, a guarantee against future eviction, or proof that
-all background downloads are idle. Metadata-only upload verification is deferred
-until the server-side cancellation issue is resolved and revalidated.
-
-After correcting a failure, rerun the whole selected manifest into a new/empty
-output. The tool does not clear Seed tasks or pieces. Correct cache may be reused;
-if wrong bytes were previously cached, fixing the origin alone may be insufficient.
-Use task-specific diagnostics and environment recovery, not an automatic cache wipe.
-
-## 4. Run a worker
-
-Use the matching [worker template](deploy/worker/worker-job.tpl.yaml) or
-[standalone example](proxy-bench-fixed-pool.yaml). Each worker receives explicit
-paths to its selected inputs, mounted read-only:
-
-- manifest, public plan descriptor and this worker's shard;
-- target configuration, preparation record and its referenced evidence.
-
-These are six files in the minimal worker input set. There is no required global
-directory tree; different nodes can use different absolute paths. Do not mount
-source object bodies into the worker. Input checks reject failed/unverified ready
-records and data/target/reference mismatches before k6 starts. They do not replay
-preparation or re-audit every object in producer-owned evidence.
-
-| Environment | Requirement / script default |
+| Input/control | Default or requirement |
 | --- | --- |
-| MANIFEST, PLAN | Required selected manifest and request-plan.json paths |
-| TARGET_CONFIG, TARGET_PREPARATION | Required selected target configuration and preparation record |
-| RUN_ID, RATE | Required run label and total positive integer requests/second |
-| WORKER_ID | 0; must exist in the plan |
-| DURATION | 300s, at least 1s; positive whole-millisecond precision |
-| TIMEOUT | 30s, positive whole-millisecond precision |
-| GRACEFUL_STOP | TIMEOUT + 5s, strictly greater than TIMEOUT |
-| PRE_ALLOCATED_VUS, MAX_VUS | 64 / 512; positive, max >= preallocated |
+| data root/size/count/base-url | Required; positive decimal bytes/count, new/empty root |
+| generation-workers | 1, limiting preparation resource use; change if appropriate |
+| plan manifest/range/out | Required file, positive decimal Range bytes, new/empty directory |
+| plan workers | 1; 1..M shards, B%R=0 |
+| memory-budget/file-budget | Omitted: no optional budget; explicit value must be positive bytes |
+| target proxy/expected_server_ip | Required; no assumed target or component version |
+| target ref | Optional display name, does not bind readiness |
+| prepare concurrency | 1; avoids assuming target preparation capacity |
+| request_timeout_ms/ready_timeout_ms | 1800000/60000; bounded full request and immediate Range check budget |
 
-Do not separately configure worker HTTP_PROXY: the entrypoint derives it from
-validated target.proxy and exports it for k6. Native k6 option precedence remains;
-the summary records effective options. The benchmark does not check k6 or Client
-version numbers. Regressions use the engine from the Dockerfile's worker image.
+A plan contains a public descriptor plus shards; no URL-list copy or standalone
+JSON Schema files are required. Workers obtain URLs from the manifest. Necessary
+format, digest, local-shard and ready checks remain in the Go consumers. Budgets
+are estimates for plan construction at its execution location, not checks of
+future workers or a replacement for Kubernetes resource limits.
 
-Workers derive their rates from the common RATE and shard sizes. One iteration
-consumes the next local region, wrapping in fixed order, and makes one business
-GET. There is no business retry or redirect; connection reuse can cause a native
-transport resend of an idempotent request. URL/Range mapping is unchanged.
-
-## Results, errors and compatibility
-
-Use worker stdout logs for the shared proxy-bench text report and the four JSON
-records: `RUN_SPEC_V1`, `WORKER_SPEC_V1`, `K6_SUMMARY_V1`, `WORKER_EXIT_V1`, each
-prefixed `PROXY_BENCH_FIXED_POOL_`. They retain input identities, worker/rate,
-effective k6 options, native metrics (including plan_consumed) and process exit.
-No result volume or Go report-conversion command is required. Job completion is
-not an HTTP quality threshold; fixed-pool does not add the original mode's 1% gate.
-
-Preparation commands emit one JSON result on stdout and diagnostics on stderr.
-Diagnostics identify actual input paths/fields and applicable expected/actual
-values; seed-cache also explains how to rerun after correction. The current Job
-templates still redirect stdout to per-Job report files; stderr is visible through
-kubectl logs. Removing that report handoff is the next deployment-refactor stage.
-
-Exit codes: help/success 0, invalid input/conflicting output/budget 2, execution
-failure 3, cancellation 130. Missing, invalid or wrong inputs do not silently
-trigger regeneration, repair, a different plan or a different target.
-
-Independent JSON Schema files are no longer shipped. Go definitions and runtime
-checks remain authoritative; the old standalone schemas cannot be used for
-editor/validator integration. Historical preparation records may contain an
-instance label and rule-identity digest: these are readable metadata, not current
-configuration or validity gates. Data/target/status/method/evidence checks remain.
-Old plan descriptors containing objects_file require the old delivery line; make
-a new plan with the new tool instead of editing published bytes or IDs.
-
-Go units run via `make test-race`. Integration tests are maintained in
-[perf-tests-fixed-pool-tests](https://github.com/system-thoughts/perf-tests-fixed-pool-tests)
-and consume built images and matching deployment material, not product source.
-They are developer regressions, not prerequisites for each benchmark run.
+Developers may use `make build-proxy-bench-tools` and the two Dockerfiles in the
+parent directory. Unit tests use standard Go testing via `make test-race`.
+Integration regressions live in the separate
+[fixed-pool test repository](https://github.com/system-thoughts/perf-tests-fixed-pool-tests).
+They consume built images and matching deploy YAML, and are not a user preflight.

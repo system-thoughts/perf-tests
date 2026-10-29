@@ -284,7 +284,7 @@ func overwrite(t *testing.T, name string, data []byte) {
 }
 
 func TestCorruptPlanRejected(t *testing.T) {
-	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "old objects_file", "shard hash", "duplicate region", "out of bounds", "wrong count"} {
+	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "old objects_file", "shard hash", "duplicate region", "out of bounds", "wrong count", "extra region"} {
 		t.Run(kind, func(t *testing.T) {
 			m, data, spec := fixture(t)
 			result, err := Prepare(context.Background(), data, spec)
@@ -305,7 +305,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"objects_file":{"path":"object-urls.json","sha256":"`+strings.Repeat("a", 64)+`"}`), 1))
 			case "shard hash":
 				overwrite(t, filepath.Join(filepath.Dir(result.Path), "shards/0.json"), []byte("[1,2,4]\n"))
-			case "duplicate region", "out of bounds", "wrong count":
+			case "duplicate region", "out of bounds", "wrong count", "extra region":
 				var p contract.Plan
 				if err := contract.Decode(body, &p); err != nil {
 					t.Fatal(err)
@@ -316,6 +316,9 @@ func TestCorruptPlanRejected(t *testing.T) {
 				}
 				if kind == "wrong count" {
 					shard = []byte("[2,1]\n")
+				}
+				if kind == "extra region" {
+					shard = []byte("[2,1,4,0]\n")
 				}
 				p.Shards[0].SHA256 = contract.Digest(shard)
 				overwrite(t, filepath.Join(filepath.Dir(result.Path), "shards/0.json"), shard)
@@ -335,8 +338,16 @@ func TestCorruptPlanRejected(t *testing.T) {
 				}
 				return
 			}
-			if _, _, _, err := Load(context.Background(), result.Path, m, contract.Digest(data)); err == nil {
+			_, _, _, err = Load(context.Background(), result.Path, m, contract.Digest(data))
+			if err == nil {
 				t.Fatal("corrupt plan accepted")
+			}
+			want := map[string]string{
+				"out of bounds": "region[2]: expected integer in [0,8), actual 8",
+				"extra region":  "region[3]: unexpected extra entry; expected 3 regions",
+			}[kind]
+			if want != "" && (!strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "PLAN.shards[0]") || !strings.Contains(err.Error(), filepath.Join(spec.Directory, "shards/0.json"))) {
+				t.Fatalf("missing shard path or region position: %v", err)
 			}
 			if _, err := Prepare(context.Background(), data, spec); err == nil {
 				t.Fatal("corrupt plan silently regenerated")

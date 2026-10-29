@@ -1,0 +1,58 @@
+# Place the chosen manifest on this PVC first. Paths are examples, not an enforced workspace.
+# Plan generation needs neither the source server nor the Seed. Select a new/empty --out.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fixed-pool-plan
+  namespace: benchmark
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: load-node
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: prepare
+        image: ghcr.io/system-thoughts/perf-tests/proxy-bench-tools:replace-with-build-tag
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/proxy-bench-prepare
+        args:
+        - plan
+        - --manifest
+        - /inputs/dataset-manifest.json
+        - --range
+        - '65536'
+        - --workers
+        - '1'
+        - --out
+        - /inputs/plan
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+        volumeMounts:
+        - name: inputs
+          mountPath: /inputs
+      volumes:
+      - name: inputs
+        persistentVolumeClaim:
+          claimName: fixed-pool-inputs

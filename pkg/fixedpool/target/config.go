@@ -133,11 +133,11 @@ func validateConfig(c Config) error {
 		return fmt.Errorf("target.expected_server_ip: expected an IP address, actual %q", c.Target.ExpectedServerIP)
 	}
 	if c.Prepare.Concurrency == 0 || c.Prepare.Concurrency > uint64(^uint(0)>>1) || c.Prepare.Concurrency > contract.MaxSafeInteger {
-		return fmt.Errorf("prepare.concurrency must be a positive native integer")
+		return fmt.Errorf("prepare.concurrency: expected a positive JavaScript-safe native integer, actual %d", c.Prepare.Concurrency)
 	}
-	for _, ms := range []uint64{c.Prepare.RequestTimeoutMS, c.Prepare.ReadyTimeoutMS} {
+	for i, ms := range []uint64{c.Prepare.RequestTimeoutMS, c.Prepare.ReadyTimeoutMS} {
 		if ms == 0 || ms > uint64((1<<63-1)/int64(time.Millisecond)) {
-			return fmt.Errorf("prepare timeouts must be positive representable milliseconds")
+			return fmt.Errorf("prepare.%s: expected positive representable milliseconds, actual %d", []string{"request_timeout_ms", "ready_timeout_ms"}[i], ms)
 		}
 	}
 	return nil

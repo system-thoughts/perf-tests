@@ -1,0 +1,25 @@
+# Optional: use existing PVCs instead. Omitted storageClassName uses the cluster default.
+# For a static PV without a class, explicitly set storageClassName: "". Review capacity/topology.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fixed-pool-source
+  namespace: benchmark
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fixed-pool-inputs
+  namespace: benchmark
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

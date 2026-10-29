@@ -18,6 +18,8 @@ package contract
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -157,5 +159,38 @@ func TestSingleWriterAndSpace(t *testing.T) {
 	}
 	if err := RequireSpace(directory, ^uint64(0)); err == nil {
 		t.Fatal("accepted impossible space request")
+	}
+}
+
+func TestManifestDiagnosticsIdentifyInputAndField(t *testing.T) {
+	for _, tc := range []struct {
+		field  string
+		change func(*Manifest)
+	}{
+		{"object_count", func(m *Manifest) { m.ObjectCount = 2 }},
+		{"objects[0].size_bytes", func(m *Manifest) { m.Objects[0].Size = 63 }},
+		{"objects[0].url", func(m *Manifest) { m.Objects[0].URL = "http://wrong.test/object" }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			m := validManifest()
+			tc.change(&m)
+			raw, err := Encode(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := filepath.Join(t.TempDir(), "chosen-manifest.json")
+			if err = os.WriteFile(name, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = ReadManifest(name)
+			if err == nil || ErrorCode(err) != ContractMismatch {
+				t.Fatalf("unexpected result: %v", err)
+			}
+			for _, part := range []string{"MANIFEST", name, tc.field, "expected", "actual"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Fatalf("missing %q: %v", part, err)
+				}
+			}
+		})
 	}
 }

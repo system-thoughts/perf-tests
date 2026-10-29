@@ -153,6 +153,9 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		if err = CheckPreparation(raw, prepPath, data.Manifest, manifestID, config); err == nil {
 			t.Fatalf("accepted changed %s", field)
 		}
+		if field == "object_count" && (!strings.Contains(err.Error(), "object_count") || !strings.Contains(err.Error(), "expected 2, actual 17")) {
+			t.Fatalf("missing field/value diagnosis: %v", err)
+		}
 	}
 	// Historical labels/rule digest do not change the verified data/target.
 	prep.Target.Ref = "renamed target"

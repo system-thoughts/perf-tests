@@ -52,7 +52,7 @@ func loadSelected(ctx context.Context, name string, manifest contract.Manifest, 
 		return p, nil, 0, contract.Input("PLAN", name, err)
 	}
 	if p.SchemaVersion != 1 || p.Algorithm != contract.OrderAlgorithm || p.Seed != contract.OrderSeed || p.ManifestSHA256 != manifestSHA {
-		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("schema/algorithm/seed or manifest_sha256 mismatch: expected manifest %s, actual %s", manifestSHA, p.ManifestSHA256))
+		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("schema_version/algorithm/seed/manifest_sha256: expected 1/%s/%s/%s, actual %d/%s/%s/%s", contract.OrderAlgorithm, contract.OrderSeed, manifestSHA, p.SchemaVersion, p.Algorithm, p.Seed, p.ManifestSHA256))
 	}
 	perObject, total, err := Geometry(manifest.ObjectSize, manifest.ObjectCount, p.RangeBytes, p.WorkerCount)
 	if err != nil {
@@ -74,7 +74,7 @@ func loadSelected(ctx context.Context, name string, manifest contract.Manifest, 
 	}
 	for worker, shard := range p.Shards {
 		if shard.WorkerID != uint64(worker) || shard.RegionCount != ShardCount(total, p.WorkerCount, uint64(worker)) || shard.Path != "shards/"+strconv.Itoa(worker)+".json" || !contract.ValidDigest(shard.SHA256) {
-			return p, nil, 0, fmt.Errorf("shard %d metadata mismatch", worker)
+			return p, nil, 0, fmt.Errorf("shards[%d] metadata: expected worker_id=%d region_count=%d path=%q and a lowercase SHA-256, actual %+v", worker, worker, ShardCount(total, p.WorkerCount, uint64(worker)), "shards/"+strconv.Itoa(worker)+".json", shard)
 		}
 		if selected != nil && *selected != uint64(worker) {
 			continue
@@ -122,8 +122,11 @@ func checkShard(ctx context.Context, name string, shard contract.Shard, total ui
 			return 0, fmt.Errorf("region must be an integer")
 		}
 		g, err := strconv.ParseUint(string(number), 10, 32)
-		if err != nil || g >= total || count >= shard.RegionCount {
-			return 0, fmt.Errorf("region/count outside shard bounds")
+		if err != nil || g >= total {
+			return 0, fmt.Errorf("region[%d]: expected integer in [0,%d), actual %s", count, total, number)
+		}
+		if count >= shard.RegionCount {
+			return 0, fmt.Errorf("region[%d]: unexpected extra entry; expected %d regions", count, shard.RegionCount)
 		}
 		if expected != nil && uint64(expected[shard.WorkerID+count*workers]) != g {
 			return 0, fmt.Errorf("region %d violates fixed shard order or membership", g)

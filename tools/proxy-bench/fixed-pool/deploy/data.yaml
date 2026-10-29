@@ -1,0 +1,58 @@
+# Edit image/node and dataset size/count/source URL. The URL must be reachable from the Seed.
+# cluster.local is an example cluster domain. Only generate into a new/empty root.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fixed-pool-data
+  namespace: benchmark
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: source-node
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: data
+        image: ghcr.io/system-thoughts/perf-tests/proxy-bench-tools:replace-with-build-tag
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/proxy-bench-prepare
+        args:
+        - data
+        - --root
+        - /data/dataset
+        - --size
+        - '4194304'
+        - --count
+        - '2'
+        - --base-url
+        - http://fixed-pool-source.benchmark.svc.cluster.local
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+        volumeMounts:
+        - name: inputs
+          mountPath: /data
+      volumes:
+      - name: inputs
+        persistentVolumeClaim:
+          claimName: fixed-pool-source

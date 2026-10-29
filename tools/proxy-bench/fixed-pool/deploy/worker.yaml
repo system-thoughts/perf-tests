@@ -1,0 +1,78 @@
+# Supply a valid manifest, plan and ready preparation. This Job reads inputs without preparing them.
+# RATE is the total rate across workers; WORKER_ID selects the shard. Review resources for real load.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fixed-pool-worker
+  namespace: benchmark
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: load-node
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: worker
+        image: ghcr.io/system-thoughts/perf-tests/proxy-bench:replace-with-build-tag
+        command:
+        - /bin/sh
+        - /home/k6/fixed-pool/run-benchmark.sh
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: inputs
+          mountPath: /inputs
+          readOnly: true
+        - name: target
+          mountPath: /config
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MANIFEST
+          value: /inputs/dataset-manifest.json
+        - name: PLAN
+          value: /inputs/plan/request-plan.json
+        - name: TARGET_PREPARATION
+          value: /inputs/preparation/target-preparation.json
+        - name: TARGET_CONFIG
+          value: /config/target-config.yaml
+        - name: RATE
+          value: '10'
+        - name: DURATION
+          value: 30s
+        - name: RUN_ID
+          value: run-001
+        - name: WORKER_ID
+          value: '0'
+      volumes:
+      - name: inputs
+        persistentVolumeClaim:
+          claimName: fixed-pool-inputs
+          readOnly: true
+      - name: target
+        configMap:
+          name: fixed-pool-target
+      - name: tmp
+        emptyDir: {}

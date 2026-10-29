@@ -66,29 +66,42 @@ func NormalizeBaseURL(value string) (string, error) {
 
 func ValidateManifest(m Manifest) error {
 	if m.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("manifest.schema_version must be 1")
+		return fmt.Errorf("manifest.schema_version: expected %d, actual %d", SchemaVersion, m.SchemaVersion)
 	}
 	if m.Generator != (Generator{Version: ContentAlgorithm, Seed: ContentSeed, BlockBytes: BlockBytes}) {
-		return fmt.Errorf("manifest.generator: unsupported fixed rule")
+		return fmt.Errorf("manifest.generator: expected %+v, actual %+v", Generator{Version: ContentAlgorithm, Seed: ContentSeed, BlockBytes: BlockBytes}, m.Generator)
 	}
-	if m.ObjectSize == 0 || m.ObjectSize > MaxSafeInteger || m.ObjectCount == 0 || m.ObjectCount > MaxSafeInteger || m.ObjectCount != uint64(len(m.Objects)) {
-		return fmt.Errorf("manifest object size/count invalid or inconsistent")
+	if m.ObjectSize == 0 || m.ObjectSize > MaxSafeInteger {
+		return fmt.Errorf("manifest.object_size_bytes: expected 1..%d, actual %d", MaxSafeInteger, m.ObjectSize)
+	}
+	if m.ObjectCount == 0 || m.ObjectCount > MaxSafeInteger || m.ObjectCount != uint64(len(m.Objects)) {
+		return fmt.Errorf("manifest.object_count: expected a positive count <= %d equal to len(objects)=%d, actual %d", MaxSafeInteger, len(m.Objects), m.ObjectCount)
 	}
 	base, err := NormalizeBaseURL(m.BaseURL)
 	if err != nil {
 		return err
 	}
 	if base != m.BaseURL {
-		return fmt.Errorf("manifest.base_url is not normalized")
+		return fmt.Errorf("manifest.base_url: expected normalized %q, actual %q", base, m.BaseURL)
 	}
 	seen := make(map[string]bool, len(m.Objects))
 	for i, object := range m.Objects {
-		if object.ID != uint64(i) || object.Size != m.ObjectSize || !ValidDigest(object.SHA256) {
-			return fmt.Errorf("manifest.objects[%d]: invalid ID, size or digest", i)
+		switch {
+		case object.ID != uint64(i):
+			return fmt.Errorf("manifest.objects[%d].object_id: expected %d, actual %d", i, i, object.ID)
+		case object.Size != m.ObjectSize:
+			return fmt.Errorf("manifest.objects[%d].size_bytes: expected %d, actual %d", i, m.ObjectSize, object.Size)
+		case !ValidDigest(object.SHA256):
+			return fmt.Errorf("manifest.objects[%d].sha256: expected 64 lowercase hex digits, actual %q", i, object.SHA256)
 		}
 		want := "objects/sha256/" + object.SHA256
-		if object.RelativePath != want || object.URL != base+"/"+want || seen[want] {
-			return fmt.Errorf("manifest.objects[%d]: conflicting path or URL", i)
+		switch {
+		case object.RelativePath != want:
+			return fmt.Errorf("manifest.objects[%d].relative_path: expected %q, actual %q", i, want, object.RelativePath)
+		case object.URL != base+"/"+want:
+			return fmt.Errorf("manifest.objects[%d].url: expected %q, actual %q", i, base+"/"+want, object.URL)
+		case seen[want]:
+			return fmt.Errorf("manifest.objects[%d].relative_path: duplicate %q", i, want)
 		}
 		seen[want] = true
 	}

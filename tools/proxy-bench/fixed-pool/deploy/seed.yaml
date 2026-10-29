@@ -1,0 +1,74 @@
+# Edit the target once here; worker.yaml reads this same ConfigMap. 192.0.2.10 is a documentation address.
+# This Job is independent of plan.yaml. Select a new/empty --out; the command does not clear Seed cache.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixed-pool-target
+  namespace: benchmark
+data:
+  target-config.yaml: |
+    schema_version: 1
+    target:
+      proxy: http://192.0.2.10:4001
+      expected_server_ip: 192.0.2.10
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fixed-pool-seed
+  namespace: benchmark
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: load-node
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: prepare
+        image: ghcr.io/system-thoughts/perf-tests/proxy-bench-tools:replace-with-build-tag
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/proxy-bench-prepare
+        args:
+        - seed-cache
+        - --manifest
+        - /inputs/dataset-manifest.json
+        - --target-config
+        - /config/target-config.yaml
+        - --out
+        - /inputs/preparation
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+        volumeMounts:
+        - name: inputs
+          mountPath: /inputs
+        - name: target
+          mountPath: /config
+          readOnly: true
+      volumes:
+      - name: inputs
+        persistentVolumeClaim:
+          claimName: fixed-pool-inputs
+      - name: target
+        configMap:
+          name: fixed-pool-target

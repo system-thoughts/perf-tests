@@ -47,16 +47,27 @@ func CheckPreparation(raw []byte, name string, m contract.Manifest, manifestID s
 		return fmt.Errorf("target-preparation manifest_sha256 mismatch: expected %s, actual %s", manifestID, actual)
 	}
 	if r.PieceStrategy != "auto" || r.Method != target.Method {
-		return fmt.Errorf("target-preparation piece_strategy/method mismatch")
+		return fmt.Errorf("target-preparation piece_strategy/method: expected auto/%s, actual %s/%s", target.Method, r.PieceStrategy, r.Method)
 	}
 	if r.Target == nil || r.Target.Proxy != c.Target.Proxy || r.Target.ExpectedServerIP != c.Target.ExpectedServerIP {
 		return fmt.Errorf("target-preparation target.proxy/expected_server_ip mismatch: expected %s/%s, actual %+v", c.Target.Proxy, c.Target.ExpectedServerIP, r.Target)
 	}
-	if r.ObjectCount == nil || *r.ObjectCount != m.ObjectCount || r.Prepare == nil || r.Prepare.Concurrency == 0 || r.Prepare.RequestTimeoutMS == 0 || r.Prepare.ReadyTimeoutMS == 0 {
-		return fmt.Errorf("target-preparation object_count/prepare invalid")
+	if r.ObjectCount == nil {
+		return fmt.Errorf("target-preparation object_count: expected %d, actual null", m.ObjectCount)
+	}
+	if *r.ObjectCount != m.ObjectCount {
+		return fmt.Errorf("target-preparation object_count: expected %d, actual %d", m.ObjectCount, *r.ObjectCount)
+	}
+	if r.Prepare == nil {
+		return fmt.Errorf("target-preparation prepare: expected preparation options, actual null")
+	}
+	for i, value := range []uint64{r.Prepare.Concurrency, r.Prepare.RequestTimeoutMS, r.Prepare.ReadyTimeoutMS} {
+		if value == 0 {
+			return fmt.Errorf("target-preparation prepare.%s: expected a positive value, actual 0", []string{"concurrency", "request_timeout_ms", "ready_timeout_ms"}[i])
+		}
 	}
 	if r.EvidenceFile == nil || r.EvidenceFile.Path != "target-object-results.json" || !contract.ValidDigest(r.EvidenceFile.SHA256) {
-		return fmt.Errorf("target-preparation evidence_file invalid")
+		return fmt.Errorf("target-preparation evidence_file: expected path target-object-results.json and a lowercase SHA-256, actual %+v", r.EvidenceFile)
 	}
 	digest, err := evidenceDigest(filepath.Join(filepath.Dir(name), r.EvidenceFile.Path))
 	if err != nil {

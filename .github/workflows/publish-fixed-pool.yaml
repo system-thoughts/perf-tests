@@ -2,7 +2,7 @@ name: Publish fixed-pool development deliverables
 
 on:
   push:
-    branches: [nydus_hot_dev]
+    branches: [nydus_hot_dev, fixed_pool_refactor, fixed_pool_refactor_vegeta]
 
 permissions:
   contents: read
@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 45
     env:
       REGISTRY: ghcr.io/system-thoughts/perf-tests
+      LOAD_ENGINE: k6
       FILE_SERVER_IMAGE: docker.io/dragonflyoss/file-server@sha256:2ba1179ee4c2634284311cba657b3981482e2061109a8bc1e53597b70a1199d9
     steps:
       - name: Checkout the candidate
@@ -45,7 +46,10 @@ jobs:
 
       - name: Select a build-specific tag
         id: version
-        run: echo "tag=sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+        run: |
+          tag="${GITHUB_REF_NAME}-sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "${#tag}" -le 128
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Publish the preparation image
         id: tools
@@ -83,9 +87,12 @@ jobs:
           cp -R tools/proxy-bench/fixed-pool/deploy tools/proxy-bench/fixed-pool/examples dist/fixed-pool-deploy/
           find dist/fixed-pool-deploy -type f -name '*.md' -delete
           cat > dist/build-info.txt <<EOF
+          Branch: ${GITHUB_REF_NAME}
           Source: https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
           Build: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}
           Platforms: linux/amd64,linux/arm64
+          Engine: ${LOAD_ENGINE}
+          Tag: ${{ steps.version.outputs.tag }}
           Tools: ${REGISTRY}/proxy-bench-tools@${TOOLS_DIGEST}
           Worker: ${REGISTRY}/proxy-bench@${WORKER_DIGEST}
           FileServer: ${FILE_SERVER_IMAGE}
@@ -105,7 +112,7 @@ jobs:
       - name: Upload the deployment bundle and build record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fixed-pool-${{ github.sha }}
+          name: fixed-pool-${{ github.ref_name }}-${{ github.sha }}-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/fixed-pool-deploy.tar.gz
             dist/build-info.txt

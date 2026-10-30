@@ -31,6 +31,7 @@ import (
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/plan"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/target"
+	"github.com/dragonflyoss/perf-tests/pkg/proxybench"
 )
 
 type Environment struct {
@@ -103,7 +104,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	}
 	e.GracefulStop = duration("GRACEFUL_STOP", e.Timeout+5*time.Second)
 	if err == nil && e.Duration < time.Second {
-		err = fmt.Errorf("DURATION must be at least 1s for the constant-arrival-rate executor")
+		err = fmt.Errorf("DURATION must be at least 1s")
 	}
 	if err == nil && (e.MaxVUs < e.PreAllocatedVUs || e.GracefulStop <= e.Timeout) {
 		err = fmt.Errorf("MAX_VUS must be >= PRE_ALLOCATED_VUS and GRACEFUL_STOP must exceed TIMEOUT")
@@ -141,20 +142,12 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 	if err != nil {
 		return contract.Tag(contract.InputInvalid, err)
 	}
-	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version()}
-	for name, label := range map[string]string{
-		"benchmark.js":      "benchmark.js",
-		"run-benchmark.sh":  "run-benchmark.sh",
-		"lib/plan.js":       "lib/plan.js",
-		"lib/summary.js":    "lib/summary.js",
-		"../lib/summary.js": "shared_lib_summary.js",
-	} {
-		raw, err := os.ReadFile(filepath.Join(scripts, name))
-		if err != nil {
-			return err
-		}
-		versions[label+"_sha256"] = contract.Digest(raw)
+	versions := map[string]string{"worker_support": "fixed-pool-vegeta-v1", "go": runtime.Version(), "vegeta": proxybench.Version()}
+	script, err := os.ReadFile(filepath.Join(scripts, "run-benchmark.sh"))
+	if err != nil {
+		return err
 	}
+	versions["run-benchmark.sh_sha256"] = contract.Digest(script)
 	configRaw, err := os.ReadFile(e.TargetConfig)
 	if err != nil {
 		return err

@@ -34,19 +34,16 @@ child=''
 
 # Derive the proxy from the validated target configuration, without eval.
 IFS= read -r HTTP_PROXY < "$work_dir/proxy" || exit 3
-# Go/k6's proxy transport must see the real environment, without bypasses.
+# Keep the child environment consistent with the validated proxy.
 unset http_proxy https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 export HTTP_PROXY
-K6_NO_USAGE_REPORT=true
-export K6_NO_USAGE_REPORT
 started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 [ "$interrupted" -eq 0 ] || exit 130
-# Use native k6 option precedence; handleSummary records effective test options.
-k6 run --no-color "$SCRIPT_DIR/benchmark.js" &
+proxy-bench-worker-support run --spec "$WORKER_SPEC" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child
-k6_code=$child_code
+engine_code=$child_code
 child=''
 ended_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 # ReadEnvironment already validated this decimal; normalize leading zeroes for JSON.
@@ -54,12 +51,12 @@ worker_id=${WORKER_ID:-0}
 while [ "${worker_id#0}" != "$worker_id" ]; do worker_id=${worker_id#0}; done
 worker_id=${worker_id:-0}
 reason=completed
-[ "$k6_code" -eq 0 ] || reason=failed
-if [ "$k6_code" -eq 126 ] || [ "$k6_code" -eq 127 ]; then reason=start_failed; fi
+[ "$engine_code" -eq 0 ] || reason=failed
+if [ "$engine_code" -eq 126 ] || [ "$engine_code" -eq 127 ]; then reason=start_failed; fi
 [ "$interrupted" -eq 0 ] || reason=interrupted
 # JSON strings below are validated identifiers, UTC timestamps or fixed enums.
 # Never interpolate free-form paths or error messages without a JSON encoder.
 printf 'PROXY_BENCH_FIXED_POOL_WORKER_EXIT_V1 {"run_id":"%s","worker_id":%s,"process_started_at":"%s","process_ended_at":"%s","exit_code":%s,"termination_reason":"%s"}\n' \
-  "$RUN_ID" "$worker_id" "$started_at" "$ended_at" "$k6_code" "$reason"
+  "$RUN_ID" "$worker_id" "$started_at" "$ended_at" "$engine_code" "$reason"
 [ "$interrupted" -eq 0 ] || exit 130
-exit "$k6_code"
+exit "$engine_code"

@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/worker"
+	"github.com/dragonflyoss/perf-tests/pkg/proxybench"
 )
 
 func main() {
@@ -54,13 +56,16 @@ func inputError(ctx context.Context, stdout io.Writer, err error) int {
 	}
 }
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "run" || args[0] == "original") {
+		return execute(ctx, args, stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "prepare-input" {
 		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("internal subcommand required: prepare-input")))
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	scripts := flags.String("script-dir", "/home/k6/fixed-pool", "internal: directory containing the executed workload")
-	output := flags.String("output", "", "internal: temporary k6 input file")
+	output := flags.String("output", "", "internal: temporary worker input file")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -76,6 +81,61 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if err = worker.PrepareInput(ctx, env, *scripts, *output, stdout); err != nil {
 		return inputError(ctx, stdout, err)
+	}
+	return 0
+}
+
+func execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var spec *string
+	if args[0] == "run" {
+		spec = flags.String("spec", "", "internal: validated worker input")
+	}
+	if err := flags.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, err))
+	}
+	if flags.NArg() != 0 || (spec != nil && *spec == "") {
+		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected arguments or missing --spec")))
+	}
+	var err error
+	thresholdFailed := false
+	if spec != nil {
+		err = worker.Run(ctx, *spec, stdout)
+	} else {
+		options, next, inputErr := proxybench.Original(os.Environ())
+		if inputErr != nil {
+			return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, inputErr))
+		}
+		report, runErr := proxybench.Execute(ctx, options, next)
+		err = errors.Join(runErr, report.WriteText(stdout))
+		if _, writeErr := fmt.Fprint(stdout, "PROXY_BENCH_VEGETA_SUMMARY_V1 "); writeErr != nil {
+			err = errors.Join(err, writeErr)
+		}
+		err = errors.Join(err, json.NewEncoder(stdout).Encode(report))
+		thresholdFailed = report.Metrics.Requests == 0 || float64(report.Metrics.Requests-report.Succeeded)/float64(report.Metrics.Requests) >= 0.01
+		result := "PASSED"
+		if thresholdFailed || report.SuccessRate == nil {
+			result = "FAILED"
+			thresholdFailed = true
+		}
+		_, writeErr := fmt.Fprintf(stdout, "Result: %s (failure rate < 1%%)\n", result)
+		err = errors.Join(err, writeErr)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+	}
+	if ctx.Err() != nil {
+		return 130
+	}
+	if err != nil {
+		return 3
+	}
+	if thresholdFailed {
+		return 99
 	}
 	return 0
 }

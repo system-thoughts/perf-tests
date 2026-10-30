@@ -2,7 +2,7 @@
 
 Measure a Dragonfly Seed with a deterministic object pool and a reusable Range
 access plan. Each worker visits its assigned regions in a fixed order, loops the
-same shard and uses k6's constant arrival rate. Reuse the inputs for repeated
+same shard and uses Vegeta's constant-rate pacer. Reuse the inputs for repeated
 rounds or change only RATE to offer more load. This tool does not search for a
 maximum QPS, clear host caches, manage experiments or decide whether results meet
 an application's latency target.
@@ -185,18 +185,39 @@ kubectl -n benchmark get job fixed-pool-worker --watch
 kubectl -n benchmark logs job/fixed-pool-worker
 ```
 
-The worker checks its explicit inputs, then starts k6. Missing, damaged or mismatched
+The worker checks its explicit inputs, then starts Vegeta. Missing, damaged or mismatched
 inputs prevent pressure and identify the input/path in the error. Logs identify
 the actual B/N, R/W, manifest/plan and target; a valid older dataset is not rejected
 because the operator may have intended another one.
 
-The shared proxy-bench text report shows requests/QPS, failure rate, latency
-percentiles, throughput and consumed plan items. Four prefixed JSON records retain
-run/worker facts, effective engine options, native summary and raw exit. There is
-no separate report command or required output volume. Job Complete means the
-process completed; it does not mean requests succeeded or the experiment is valid.
-No default 1% failure threshold is installed by fixed-pool. k6's own configured
-thresholds and exit codes still apply.
+Vegeta's native text report shows request count, actual request rate, successful
+request throughput, min/mean/P50/P90/P95/P99/max latency, status codes and errors.
+The native rate uses the first and last request-start timestamps, not the target
+RATE. JSON latencies and durations are in nanoseconds. Requests that fail while
+connecting or reading bodies remain in the statistics. With fewer than two
+samples, rate/latency estimates are marked insufficient.
+
+Four prefixed JSON records retain the run/worker facts, effective options,
+`VEGETA_SUMMARY_V1` and raw process exit. The summary's `native_summary` contains
+Vegeta metrics; `expected_status_success_ratio` separately requires HTTP 206 and
+no transport/body-read error. Vegeta's native success treats 2xx/3xx as successful,
+so a Range request answered with 200 can have native success but benchmark failure.
+Bodies are fully read and discarded; byte/throughput statistics count actual body
+bytes, including partial reads, rather than saved bodies or HTTP headers.
+
+`PRE_ALLOCATED_VUS` and `MAX_VUS` retain their names/defaults and select Vegeta's
+initial/maximum worker goroutines. At the cap, Vegeta waits for a worker; it does
+not provide k6's dropped-iteration counter. Compare actual rate with target RATE
+and inspect generator resources. DURATION stops new requests, TIMEOUT bounds each
+request, and GRACEFUL_STOP bounds draining. Connection reuse and transport-level
+GET resends remain possible; there are no application retries or redirects.
+
+There is no separate report command or required output volume. Job Complete means
+the process completed, not that requests succeeded or the experiment is valid.
+Fixed-pool has no default 1% failure threshold. k6 CLI/JS/configuration and `K6_*`
+are not interpreted. The accepted native report has whole-request latency, without
+connect/first-byte/download breakdowns. Historical k6 reports remain with their
+original branches and are not directly comparable to Vegeta latency/byte metrics.
 
 Save logs if useful, during execution or afterwards. This is optional:
 

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/dataset"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/plan"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/target"
+	vegeta "github.com/tsenart/vegeta/v12/lib"
 )
 
 func baseEnv() []string {
@@ -50,11 +52,6 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 				t.Fatal("accepted invalid environment")
 			}
 		})
-	}
-	for _, extra := range []string{"K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
-		if _, err := ReadEnvironment(append(baseEnv(), extra)); err != nil {
-			t.Fatalf("native k6 environment rejected: %v", err)
-		}
 	}
 	e, err = ReadEnvironment(append(baseEnv(), "TIMEOUT=100ms", "DURATION=5s"))
 	if err != nil || e.GracefulStop != 5100*time.Millisecond {
@@ -183,27 +180,17 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Preparing inputs must never invoke the engine, including a version probe.
-	probe := filepath.Join(dir, "k6-invoked")
-	if err = os.WriteFile(filepath.Join(bin, "k6"), []byte("#!/bin/sh\nprintf invoked > '"+probe+"'\nexit 99\n"), 0700); err != nil {
+	probe := filepath.Join(dir, "engine-invoked")
+	if err = os.WriteFile(filepath.Join(bin, "proxy-bench-worker-support"), []byte("#!/bin/sh\nprintf invoked > '"+probe+"'\nexit 99\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	scripts := filepath.Join(dir, "scripts")
-	if err = os.MkdirAll(filepath.Join(scripts, "lib"), 0700); err != nil {
+	if err = os.MkdirAll(scripts, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.MkdirAll(filepath.Join(scripts, "../lib"), 0700); err != nil {
+	if err = os.WriteFile(filepath.Join(scripts, "run-benchmark.sh"), []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
-	}
-	const sharedSummary = "shared summary fixture"
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js", "../lib/summary.js"} {
-		contents := []byte("fixture")
-		if name == "../lib/summary.js" {
-			contents = []byte(sharedSummary)
-		}
-		if err = os.WriteFile(filepath.Join(scripts, name), contents, 0600); err != nil {
-			t.Fatal(err)
-		}
 	}
 	env, err := ReadEnvironment(baseEnv())
 	if err != nil {
@@ -236,6 +223,30 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.ManifestID != manifestID || spec.PlanID != p.SHA256 {
 		t.Fatalf("%+v", spec)
 	}
+	next, err := Targets(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shardRaw, err := os.ReadFile(spec.Shard.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var regions []uint32
+	if err = json.Unmarshal(shardRaw, &regions); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3*len(regions); i++ {
+		var request vegeta.Target
+		if err = next(&request); err != nil {
+			t.Fatal(err)
+		}
+		g := uint64(regions[i%len(regions)])
+		start := (g % 4) * 16
+		wantRange := fmt.Sprintf("bytes=%d-%d", start, start+15)
+		if request.URL != data.Manifest.Objects[g/4].URL || request.Header.Get("Range") != wantRange || request.Header.Get("Accept-Encoding") != "identity" || request.Header.Get("X-Dragonfly-Prefetch") != "false" {
+			t.Fatalf("request %d: %+v", i, request)
+		}
+	}
 	var lines []string
 	for _, line := range strings.Split(logs.String(), "\n") {
 		if strings.HasPrefix(line, Prefix) {
@@ -264,8 +275,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		run.TargetConfig.Path != "target-config.yaml" || run.TargetPreparation.Path != "target-preparation.json" {
 		t.Fatalf("incorrect public context: %+v", run)
 	}
-	if run.ToolVersions["shared_lib_summary.js_sha256"] != contract.Digest([]byte(sharedSummary)) {
-		t.Fatal("shared report digest has an incorrect label or source")
+	if run.ToolVersions["run-benchmark.sh_sha256"] != contract.Digest([]byte("fixture")) || run.ToolVersions["vegeta"] == "" {
+		t.Fatal("missing script digest or engine provenance")
 	}
 	if _, exists := run.ToolVersions["k6"]; exists {
 		t.Fatal("engine version leaked into public context")
@@ -278,7 +289,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		t.Fatalf("missing input facts: %s", logs.String())
 	}
 	if _, err = os.Stat(probe); !os.IsNotExist(err) {
-		t.Fatalf("input preparation invoked k6: %v", err)
+		t.Fatalf("input preparation invoked the engine: %v", err)
 	}
 	if err = PrepareInput(ctx, env, scripts, filepath.Join(dir, "missing", "input.json"), io.Discard); err == nil {
 		t.Fatal("ignored temporary input write failure")

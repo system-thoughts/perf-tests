@@ -30,13 +30,13 @@ type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestInternalInterfaceRejectsUnknownArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"prepare-input", "--rate", "5"}, {"prepare-input", "extra"}, {"write-report", "--unknown"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"run"}, {"original", "unexpected"}, {"prepare-input", "--rate", "5"}, {"prepare-input", "extra"}, {"write-report", "--unknown"}} {
 		var out, diagnostic strings.Builder
 		if got := run(context.Background(), args, &out, &diagnostic); got != 2 || !strings.Contains(out.String(), "INPUT_INVALID") {
 			t.Fatalf("%v code=%d out=%s", args, got, out.String())
 		}
 	}
-	for _, name := range []string{"prepare-input"} {
+	for _, name := range []string{"prepare-input", "run", "original"} {
 		if got := run(context.Background(), []string{name, "--help"}, io.Discard, io.Discard); got != 0 {
 			t.Fatal(got)
 		}

@@ -1,127 +1,98 @@
 # proxy-bench
 
-Load-test the Dragonfly dfdaemon proxy with [k6](https://k6.io). Every request goes through the proxy, the
-response body is discarded as it arrives, and k6 prints latency, throughput and error rate at the end.
-
-## Prerequisites
-
-- Dragonfly installed in the cluster, see the [root README](../../README.md).
-- The test file server: `kubectl apply -f ../file-server/file-server.yaml`.
+Load-test the Dragonfly dfdaemon proxy with Vegeta. Responses are downloaded in
+full and discarded as they arrive. The end-of-run report uses Vegeta's native
+statistics, with benchmark success and payload throughput added.
 
 ## Run in Kubernetes
 
-1. Point the Job at the proxy and pick a mode by editing `env` in `proxy-bench.yaml`:
-
-   ```yaml
-   - name: HTTP_PROXY
-     value: 'http://seed-client:4001'
-   - name: MODE
-     value: 'repeat' # repeat | random | sequential
-   ```
-
-2. Start the Job in the namespace where the proxy and the file server run, the two hostnames above resolve
-   there:
-
-   ```shell
-   kubectl apply -n dragonfly-system -f proxy-bench.yaml
-   ```
-
-3. Follow the logs, the summary is printed when the run ends:
-
-   ```shell
-   kubectl logs -n dragonfly-system -f job/proxy-bench
-   ```
-
-   The Job is marked `Failed` when more than 1% of the requests failed.
-
-4. Delete the Job before the next run, its name is fixed:
-
-   ```shell
-   kubectl delete -n dragonfly-system job/proxy-bench
-   ```
-
-## Run locally
-
-Install [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), then:
+Deploy Dragonfly and the [file server](../file-server/file-server.yaml), then edit
+`proxy-bench.yaml`: select an image from this branch's build record, the proxy,
+mode and load settings. Start and read the Job as before:
 
 ```shell
-HTTP_PROXY=http://127.0.0.1:4001 k6 run -e MODE=sequential -e RATE=2000 -e MAX_VUS=1024 proxy-bench.js
+kubectl apply -n dragonfly-system -f proxy-bench.yaml
+kubectl logs -n dragonfly-system -f job/proxy-bench
 ```
 
-## Modes
+Before another round, delete/recreate the Job. Request failures of at least 1%
+produce exit code 99 and a Failed Job. This default threshold applies to the
+three modes below; [fixed-pool](fixed-pool/README.md) has its own worker entrypoint
+and no default failure threshold.
 
-| Mode         | What every request does                                                                        |
-|--------------|------------------------------------------------------------------------------------------------|
-| `repeat`     | Same URL every time, one Dragonfly task, served from the P2P cache.                            |
-| `random`     | Unique query string every time, one task per request, always back-to-source.                   |
-| `sequential` | Read `FILE_SIZE` bytes head to tail in `CHUNK_SIZE` ranges, cycling through `URL_COUNT` tasks. |
+## Modes and configuration
 
-## Knobs
+All benchmark controls remain environment variables in the Job or container.
 
-All knobs are environment variables, set them in the Job `env` or with `k6 run -e NAME=value`.
+| Mode | Request construction |
+| --- | --- |
+| `repeat` | Same URL every request, normally served from the P2P cache |
+| `random` | Unique query per request and run/Pod, creating distinct tasks |
+| `sequential` | Interleaved streams read objects head to tail in ranged chunks |
 
-| Name                | Default                    | Description                                              |
-|---------------------|----------------------------|----------------------------------------------------------|
-| `HTTP_PROXY`        | none                       | Proxy to send requests through.                          |
-| `MODE`              | `repeat`                   | `repeat`, `random` or `sequential`.                      |
-| `TARGET_URL`        | `http://file-server/4m` \* | Object to download.                                      |
-| `RATE`              | `1000`                     | Requests per second.                                     |
-| `PRE_ALLOCATED_VUS` | `64`                       | Concurrent requests k6 starts up front.                  |
-| `MAX_VUS`           | `512`                      | Max concurrent requests, k6 adds VUs on demand up to it. |
-| `DURATION`          | `60s`                      | Test duration.                                           |
-| `TIMEOUT`           | `30s`                      | Per-request timeout.                                     |
-| `RANGE`             | none                       | Range header for repeat/random, e.g. `0-1023`.           |
-| `FILE_SIZE`         | `1073741824` (1GiB)        | sequential: object size in bytes.                        |
-| `CHUNK_SIZE`        | `4194304` (4MiB)           | sequential: bytes per request.                           |
-| `STREAMS`           | `128`                      | sequential: readers interleaved round-robin.             |
-| `URL_COUNT`         | `32`                       | sequential: number of tasks in the pool.                 |
-| `SEED_CLIENT_CPUS`  | off                        | CPUs of the seed client, prints `cpu_cost`.              |
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `HTTP_PROXY` | none | Proxy for ordinary modes; standard Go proxy environment rules apply |
+| `MODE` | `repeat` | `repeat`, `random`, `sequential` |
+| `TARGET_URL` | `http://file-server/4m` | Object URL; sequential defaults to `/1g` |
+| `RATE` | `1000` | Target requests per second |
+| `PRE_ALLOCATED_VUS` | `64` | Initial Vegeta worker goroutines; legacy parameter name retained |
+| `MAX_VUS` | `512` | Maximum Vegeta workers, at least PRE_ALLOCATED_VUS |
+| `DURATION` | `60s` | Window for starting requests |
+| `TIMEOUT` | `30s` | Complete-request timeout; in-flight requests may finish after DURATION |
+| `RANGE` | none | Optional Range for repeat/random, such as `0-1023` |
+| `FILE_SIZE` | `1073741824` | Sequential object size, bytes |
+| `CHUNK_SIZE` | `4194304` | Sequential bytes per request; last chunk is truncated |
+| `STREAMS` | `128` | Sequential round-robin stream count |
+| `URL_COUNT` | `32` | Sequential URL pool size |
+| `SEED_CLIENT_CPUS` | `0` | Optional cores used by Seed, for payload core/Gbps |
 
-\* `http://file-server/1g` in the sequential mode.
+The image still starts ordinary modes by default. No engine selector or new
+required setting is needed. k6 CLI/JS, `K6_*` and k6 configuration files are no
+longer interpreted. For optional local development:
 
-## Reading the report
-
-k6 prints a short report instead of its default summary:
-
-```text
-proxy-bench (sequential)
-
-  Run           sequential via http://seed-client:4001, 60.0s
-  Target        http://file-server/1g
-  Load          2000 req/s target, constant-arrival-rate, 64 to 512 VUs
-  Sequential    1 GiB in 4 MiB chunks, 256 per pass, 128 streams over 32 URLs
-
-  Requests      119,987 total, 1999.8 req/s, 0 dropped
-  Failed        0 of 119,987 (0.00%), status other than 206 or transport error
-
-  Latency (ms)        min      avg      med    p(90)    p(95)    p(99)      max
-    request         12.11   127.40   118.62   201.55   233.10   310.27   812.94
-    connect          0.00     0.01     0.00     0.00     0.00     0.21     4.10
-    first byte       0.31     9.85     6.20    18.71    27.02    61.44   402.80
-    download        11.02   117.30   111.90   186.02   214.65   281.13   711.50
-
-  Throughput    468.7 GiB received, 67.10 Gbps
-  CPU cost      4 cores / 67.10 Gbps = 0.060 core/Gbps
-
-  Result        PASSED, ✓ http_req_failed rate<0.01
+```shell
+make build-proxy-bench-worker-support
+HTTP_PROXY=http://127.0.0.1:4001 MODE=sequential RATE=2000 MAX_VUS=1024 \
+  ./bin/proxy-bench-worker-support original
 ```
 
-| Row          | Meaning                                                                              |
-|--------------|--------------------------------------------------------------------------------------|
-| `Requests`   | Requests sent, rate achieved, requests dropped because `MAX_VUS` could not keep up.  |
-| `Failed`     | Wrong status code or transport error, 206 is expected for ranged requests, else 200. |
-| `request`    | Whole request, from first byte sent to last byte received.                           |
-| `connect`    | TCP connect, 0 once connections are reused.                                          |
-| `first byte` | Request sent to first byte of the response, i.e. proxy latency.                      |
-| `download`   | First to last byte of the response body.                                             |
-| `Throughput` | Bytes received through the proxy, headers included.                                  |
-| `CPU cost`   | Seed client cores per Gbps served, only with `SEED_CLIENT_CPUS`.                     |
-| `Result`     | `FAILED` and exit code 99 when a threshold is crossed.                               |
+## Read the report
 
-## Build the image
+Vegeta prints Requests `[total, rate, throughput]`, Duration, Latencies
+`[min, mean, 50, 90, 95, 99, max]`, Bytes In/Out, Success, Status Codes and Error Set.
+The following single-line `PROXY_BENCH_VEGETA_SUMMARY_V1` JSON retains native
+metrics, effective options and benchmark counters. JSON durations/latencies use
+nanoseconds; success values are ratios from 0 to 1.
+
+- `native_summary.rate` is actual logical HTTP attempts per second using Vegeta's
+  first/last request-start window, rather than configured RATE or server arrivals.
+- `native_summary.throughput` is successful requests per second. These two rates
+  use Vegeta's native denominators and have different meanings.
+- `expected_status_success_ratio` requires the expected status and a complete
+  response without errors: 206 for ranged requests, otherwise 200. Native Success
+  accepts 2xx/3xx, so inspect both when a proxy ignores Range.
+- `native_summary.latencies['99th']` is P99. Only whole-request latencies are
+  reported; no connect/first-byte/download breakdown is synthesized.
+- Bytes In and payload throughput count actual body bytes, including partial
+  reads. They do not include headers, and empty saved bodies do not make them zero.
+- The CPU-cost line, when configured and throughput is positive, uses payload Gbps.
+
+At MAX_VUS, Vegeta waits for a worker. It can fall below target RATE and does not
+produce k6 dropped iterations. Inspect actual rate, errors and generator resources.
+Fewer than two samples produce an insufficient-samples notice; a no-request run
+fails the ordinary-mode threshold. A successful process exit does not establish
+experimental validity. OOM/SIGKILL may leave incomplete logs.
+
+## Build and development images
 
 ```shell
 make docker-build-proxy-bench
 ```
 
-Tag and push it, then update `image` in `proxy-bench.yaml`.
+The fork workflow publishes tools and worker images to
+`ghcr.io/system-thoughts/perf-tests/`. Builds from `fixed_pool_refactor_vegeta`,
+`fixed_pool_refactor` and `nydus_hot_dev` use distinct
+`<branch>-sha-<full-sha>-run-<run-id>-<attempt>` tags. Select matching images and
+deployment material from one build; its `build-info.txt` records the immutable
+digests and engine. Published builds do not update a shared latest tag.

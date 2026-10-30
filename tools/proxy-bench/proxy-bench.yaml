@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: proxy-bench
-          image: dragonflyoss/proxy-bench:v2.0.0
+          image: ghcr.io/system-thoughts/perf-tests/proxy-bench:replace-with-build-tag
           imagePullPolicy: 'Always'
           securityContext:
             allowPrivilegeEscalation: false
@@ -35,11 +35,11 @@ spec:
             limits:
               cpu: '8'
               memory: 16Gi
-          # The k6 end-of-test summary is printed to stdout, read it with
-          # kubectl logs job/proxy-bench. The Job fails when more than 1% of
-          # the requests failed, see the thresholds in proxy-bench.js.
+          # The Vegeta end-of-test report is printed to stdout, read it with
+          # kubectl logs job/proxy-bench. The Job fails when at least 1% of
+          # the requests failed, the failure rate must be strictly below 1%.
           env:
-            # k6 reads the proxy from the standard HTTP_PROXY variable.
+            # The worker reads the proxy from the standard HTTP_PROXY variable.
             - name: HTTP_PROXY
               value: 'http://seed-client:4001'
             # Mode: "repeat" downloads the same URL every request, "random"
@@ -48,9 +48,9 @@ spec:
             # pool of URL_COUNT unique query strings.
             - name: MODE
               value: 'repeat'
-            # Requests per second. k6 starts PRE_ALLOCATED_VUS VUs up front and
-            # adds more on demand up to MAX_VUS; requests that find no free VU
-            # are counted as dropped in the summary.
+            # Target requests per second. PRE_ALLOCATED_VUS and MAX_VUS select
+            # Vegeta initial/maximum workers; at the cap it waits for a worker.
+            # Read actual request rate in the native report.
             - name: RATE
               value: '1000'
             - name: PRE_ALLOCATED_VUS

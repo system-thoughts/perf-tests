@@ -36,7 +36,7 @@ func TestInternalInterfaceRejectsUnknownArguments(t *testing.T) {
 			t.Fatalf("%v code=%d out=%s", args, got, out.String())
 		}
 	}
-	for _, name := range []string{"prepare-input", "write-report"} {
+	for _, name := range []string{"prepare-input", "run", "write-report"} {
 		if got := run(context.Background(), []string{name, "--help"}, io.Discard, io.Discard); got != 0 {
 			t.Fatal(got)
 		}

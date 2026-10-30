@@ -125,3 +125,35 @@ make docker-build-proxy-bench
 ```
 
 Tag and push it, then update `image` in `proxy-bench.yaml`.
+
+## Fixed-pool engine on nydus_hot_dev
+
+Fixed-pool Jobs use Vegeta v12.13.0 through the existing
+`/home/k6/fixed-pool/run-benchmark.sh` command. The ordinary benchmark entrypoint
+and its modes continue to use k6 on this branch.
+
+Keep the existing preparation commands, manifests, plans, target preparation,
+Job environment and `RESULT_DIR` mount. `PRE_ALLOCATED_VUS` and `MAX_VUS` now
+control Vegeta's initial and maximum concurrent workers. Vegeta uses its native
+rate pacer; at the worker cap it waits for capacity, so actual QPS can fall below
+`RATE`. `K6_*` engine options are rejected for fixed-pool, except the shared
+image's inert `K6_NO_USAGE_REPORT` telemetry flag.
+
+Logs contain Vegeta's native report and `VEGETA_SUMMARY` record. The result
+volume contains `vegeta-summary.json` instead of `k6-summary.json`, alongside
+`run-spec.json`, `worker-spec.json`, `worker-execution.json` and
+`worker-summary.json`. The normalized summary retains actual QPS, request count,
+HTTP-206 success percentage, P50/P95/P99/mean/max latency in milliseconds and
+received body bytes. Vegeta JSON durations use nanoseconds. Actual QPS comes
+from Vegeta's native rate; tool duration includes request drain. HTTP success
+requires 206 and no transport/body-read error, independently of Vegeta's native
+2xx/3xx success statistic. `DROPPED_ITERATIONS` is null because Vegeta has no such
+counter. Interrupted/incomplete executions do not claim verified coverage.
+
+The GitHub publishing workflow uses separate tags for `fixed_pool_refactor`,
+`nydus_hot_dev` and `fixed_pool_refactor_vegeta`:
+`<branch>-sha-<full-commit>-run-<run-id>-<attempt>`. Both `proxy-bench` and
+`proxy-bench-tools` are hosted under `ghcr.io/system-thoughts/perf-tests` with
+this tag. Branches, new commits and workflow reruns receive distinct tags.
+Use the matching workflow artifact's `build-info.txt` to obtain image digests
+and deployment files from the same branch and commit.

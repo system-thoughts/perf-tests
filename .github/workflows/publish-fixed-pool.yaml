@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 45
     env:
       REGISTRY: ghcr.io/system-thoughts/perf-tests
-      LOAD_ENGINE: k6
+      LOAD_ENGINE: vegeta
       FILE_SERVER_IMAGE: docker.io/dragonflyoss/file-server@sha256:2ba1179ee4c2634284311cba657b3981482e2061109a8bc1e53597b70a1199d9
     steps:
       - name: Checkout the candidate

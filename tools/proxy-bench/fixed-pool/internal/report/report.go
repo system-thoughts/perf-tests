@@ -29,15 +29,21 @@ import (
 )
 
 type NativeSummary struct {
-	SchemaVersion int    `json:"schema_version"`
-	RunID         string `json:"run_id"`
-	WorkerID      uint64 `json:"worker_id"`
-	ManifestID    string `json:"manifest_id"`
-	PlanID        string `json:"plan_id"`
-	// Accepted for older summaries only; engine metadata never controls results.
-	K6Version        any            `json:"k6_version,omitempty"`
+	SchemaVersion    int            `json:"schema_version"`
+	RunID            string         `json:"run_id"`
+	WorkerID         uint64         `json:"worker_id"`
+	ManifestID       string         `json:"manifest_id"`
+	PlanID           string         `json:"plan_id"`
+	Engine           string         `json:"engine"`
+	EngineVersion    string         `json:"engine_version"`
 	Native           map[string]any `json:"native_summary"`
-	EffectiveOptions map[string]any `json:"effective_options,omitempty"`
+	EffectiveOptions map[string]any `json:"effective_options"`
+	Consumed         *float64       `json:"plan_consumed"`
+	Succeeded        *float64       `json:"expected_status_successes"`
+	SuccessRate      *float64       `json:"expected_status_success_ratio"`
+	Canceled         uint64         `json:"canceled_requests"`
+	PayloadGbps      float64        `json:"payload_gbps"`
+	Interrupted      bool           `json:"interrupted"`
 }
 type Coverage struct {
 	UniqueRegions uint64  `json:"unique_regions"`
@@ -92,56 +98,21 @@ func number(v any) *float64 {
 	}
 	return &n
 }
-func metric(n NativeSummary, name, key string) *float64 {
-	return number(mapValue(n.Native, "metrics", name, "values", key))
+func metric(n NativeSummary, keys ...string) *float64 {
+	return number(mapValue(n.Native, keys...))
 }
-func sampleCount(n NativeSummary, key string) *float64 {
-	value := metric(n, "http_req_failed", key)
-	if value != nil && (*value != math.Trunc(*value) || *value > float64(contract.MaxSafeInteger)) {
+func count(value *float64) *float64 {
+	if value == nil || *value < 0 || math.IsNaN(*value) || math.IsInf(*value, 0) || *value != math.Trunc(*value) || *value > float64(contract.MaxSafeInteger) {
 		return nil
 	}
 	return value
 }
-func counter(n NativeSummary, name string) *float64 {
-	v := metric(n, name, "count")
-	if v != nil && (*v != math.Trunc(*v) || *v > float64(contract.MaxSafeInteger)) {
+func scaled(value *float64, scale float64) *float64 {
+	if value == nil {
 		return nil
 	}
-	return v
-}
-
-func droppedCount(n NativeSummary, issues []worker.Issue) *float64 {
-	value := counter(n, "dropped_iterations")
-	metrics, _ := n.Native["metrics"].(map[string]any)
-	_, present := metrics["dropped_iterations"]
-	if value != nil || present {
-		return value
-	}
-	// k6 omits the whole metric when no dropped-iteration samples were emitted.
-	// Regressions check this behavior against the engine shipped by the image.
-	// Missing local execution facts do not invalidate otherwise complete native
-	// metrics; missing native fields must never be silently converted to zero.
-	for _, issue := range issues {
-		if issue.Code == "RESULT_INCOMPLETE" && (issue.Stage == "summary" || issue.Stage == "metrics") {
-			return nil
-		}
-	}
-	zero := float64(0)
-	return &zero
-}
-
-// Native configuration can replace scenarios or partition their iteration IDs.
-// These observations qualify coverage; they never reject engine configuration.
-func continuousScenario(n *NativeSummary) bool {
-	if n == nil || n.EffectiveOptions == nil {
-		// Legacy summaries predate the effective-options snapshot.
-		return true
-	}
-	if n.EffectiveOptions["executionSegment"] != nil {
-		return false
-	}
-	scenarios, ok := n.EffectiveOptions["scenarios"].(map[string]any)
-	return ok && len(scenarios) == 1
+	v := *value * scale
+	return &v
 }
 
 // Derive maps native values without recomputing rates or combining distributions.
@@ -165,7 +136,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			r.ExecutionState = worker.Failed
 		case execution.ExitCode == nil:
 			r.ExecutionState = worker.Unknown
-			addIssue(&r, spec, "RESULT_INCOMPLETE", "execution", "k6 exit code unknown")
+			addIssue(&r, spec, "RESULT_INCOMPLETE", "execution", "Vegeta exit code unknown")
 		case *execution.ExitCode != 0:
 			r.ExecutionState = worker.Failed
 		case execution.TerminationReason == worker.Completed:
@@ -184,63 +155,66 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			}
 		}
 	}
-	if n != nil && (n.SchemaVersion != 1 || n.RunID != spec.RunID || n.WorkerID != spec.WorkerID || n.ManifestID != spec.ManifestID || n.PlanID != spec.PlanID || n.Native == nil) {
+	if n != nil && (n.SchemaVersion != 1 || n.RunID != spec.RunID || n.WorkerID != spec.WorkerID || n.ManifestID != spec.ManifestID || n.PlanID != spec.PlanID || n.Engine != "vegeta" || n.Native == nil) {
 		n = nil
 	}
 	if n == nil {
-		addIssue(&r, spec, "RESULT_INCOMPLETE", "summary", "k6-summary.json missing, invalid or mismatched")
+		addIssue(&r, spec, "RESULT_INCOMPLETE", "summary", "vegeta-summary.json missing, invalid or mismatched")
 	}
-	fields := []struct{ output, metric, key string }{
-		{"ACTUAL_QPS", "http_reqs", "rate"}, {"REQUESTS_TOTAL", "http_reqs", "count"},
-		{"P99_MS", "http_req_duration", "p(99)"}, {"P50_MS", "http_req_duration", "med"}, {"P95_MS", "http_req_duration", "p(95)"}, {"MEAN_MS", "http_req_duration", "avg"}, {"MAX_MS", "http_req_duration", "max"},
-		{"DATA_RECEIVED_BYTES", "data_received", "count"},
+	fields := []struct {
+		output string
+		keys   []string
+		scale  float64
+	}{
+		{"ACTUAL_QPS", []string{"rate"}, 1}, {"REQUESTS_TOTAL", []string{"requests"}, 1},
+		{"P99_MS", []string{"latencies", "99th"}, 1e-6}, {"P50_MS", []string{"latencies", "50th"}, 1e-6},
+		{"P95_MS", []string{"latencies", "95th"}, 1e-6}, {"MEAN_MS", []string{"latencies", "mean"}, 1e-6},
+		{"MAX_MS", []string{"latencies", "max"}, 1e-6}, {"DATA_RECEIVED_BYTES", []string{"bytes_in", "total"}, 1},
 	}
 	for _, field := range fields {
 		var value *float64
 		if n != nil {
-			if field.key == "count" {
-				value = counter(*n, field.metric)
-			} else {
-				value = metric(*n, field.metric, field.key)
-			}
+			value = scaled(metric(*n, field.keys...), field.scale)
 		}
 		w.Metrics[field.output] = value
 		if n != nil && value == nil {
-			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", field.metric+".values."+field.key+" unavailable")
+			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", field.output+" unavailable")
 		}
 	}
 	w.Metrics["SUCCESS_PCT"] = nil
 	w.Metrics["TOOL_DURATION_S"] = nil
+	// Vegeta blocks at MaxWorkers; it has no k6 dropped_iterations counter.
 	w.Metrics["DROPPED_ITERATIONS"] = nil
 	if n != nil {
-		w.PlanConsumed.Count = counter(*n, "plan_consumed")
-		w.Iterations.Count = counter(*n, "iterations")
-		w.HTTPRequests.Count = counter(*n, "http_reqs")
-		for name, value := range map[string]*float64{"plan_consumed": w.PlanConsumed.Count, "iterations": w.Iterations.Count, "http_reqs": w.HTTPRequests.Count} {
-			if value == nil {
-				addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", name+".values.count unavailable")
-			}
+		w.PlanConsumed.Count = count(n.Consumed)
+		w.HTTPRequests.Count = count(metric(*n, "requests"))
+		w.Iterations.Count = w.HTTPRequests.Count
+		if w.PlanConsumed.Count == nil || w.HTTPRequests.Count == nil {
+			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "consumed/requests unavailable")
 		}
-		failed := metric(*n, "http_req_failed", "rate")
-		w.SuccessfulSamples = sampleCount(*n, "fails")
-		w.FailedSamples = sampleCount(*n, "passes")
-		if failed == nil || *failed > 1 || w.SuccessfulSamples == nil || w.FailedSamples == nil {
-			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "http_req_failed rate/fails/passes unavailable")
-		} else if *w.SuccessfulSamples+*w.FailedSamples > 0 {
-			v := (1 - *failed) * 100
-			w.Metrics["SUCCESS_PCT"] = &v
-		}
-		duration := number(mapValue(n.Native, "state", "testRunDurationMs"))
-		if duration == nil {
-			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "state.testRunDurationMs unavailable")
+		w.SuccessfulSamples = count(n.Succeeded)
+		if w.SuccessfulSamples == nil || w.HTTPRequests.Count == nil || *w.SuccessfulSamples > *w.HTTPRequests.Count {
+			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "expected-status successes unavailable")
 		} else {
-			seconds := *duration / 1000
+			failed := *w.HTTPRequests.Count - *w.SuccessfulSamples
+			w.FailedSamples = &failed
+		}
+		if n.SuccessRate == nil || *n.SuccessRate < 0 || *n.SuccessRate > 1 || math.IsNaN(*n.SuccessRate) || math.IsInf(*n.SuccessRate, 0) {
+			if w.HTTPRequests.Count == nil || *w.HTTPRequests.Count != 0 {
+				addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "expected-status success ratio unavailable")
+			}
+		} else {
+			w.Metrics["SUCCESS_PCT"] = scaled(n.SuccessRate, 100)
+		}
+		duration, wait := metric(*n, "duration"), metric(*n, "wait")
+		if duration == nil || wait == nil {
+			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "Vegeta duration/wait unavailable")
+		} else {
+			seconds := (*duration + *wait) / 1e9
 			w.Metrics["TOOL_DURATION_S"] = &seconds
 		}
-		dropped := droppedCount(*n, r.Errors)
-		w.Metrics["DROPPED_ITERATIONS"] = dropped
-		if dropped == nil {
-			addIssue(&r, spec, "RESULT_INCOMPLETE", "metrics", "dropped_iterations.values.count unavailable")
+		if n.Interrupted && r.ExecutionState == worker.Completed {
+			r.ExecutionState = worker.Interrupted
 		}
 		if w.HTTPRequests.Count != nil && *w.HTTPRequests.Count == 0 {
 			w.Metrics["SUCCESS_PCT"] = nil
@@ -257,7 +231,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			addIssue(&r, spec, "WORKER_FAILED", "execution", "normal exit has inconsistent consumed/iterations/http_reqs counters")
 		}
 	}
-	if r.ExecutionState == worker.Completed && countsValid && r.ResultComplete && continuousScenario(n) {
+	if r.ExecutionState == worker.Completed && countsValid && r.ResultComplete {
 		unique := min(uint64(*w.PlanConsumed.Count), spec.RegionCount)
 		if spec.RangeBytes == 0 || unique > contract.MaxSafeInteger/spec.RangeBytes {
 			addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "logical byte coverage exceeds the exact integer contract")
@@ -265,7 +239,7 @@ func Derive(run worker.RunSpec, spec worker.Spec, n *NativeSummary, execution *w
 			w.Coverage = &Coverage{UniqueRegions: unique, LogicalBytes: unique * spec.RangeBytes, Ratio: float64(unique) / float64(spec.RegionCount)}
 		}
 	} else {
-		addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "coverage requires normal completion, consistent consumption and one unsegmented scenario")
+		addIssue(&r, spec, "COVERAGE_UNVERIFIED", "coverage", "coverage requires normal completion and consistent consumption")
 	}
 	r.Workers = append(r.Workers, w)
 	if run.WorkerCount == 1 {
@@ -289,11 +263,11 @@ func Write(directory string, execution worker.Execution, stdout io.Writer) int {
 	}
 	var native NativeSummary
 	var n *NativeSummary
-	if worker.ReadRecord(filepath.Join(directory, "k6-summary.json"), &native) == nil {
+	if worker.ReadRecord(filepath.Join(directory, "vegeta-summary.json"), &native) == nil {
 		n = &native
 	}
 	result := Derive(run, spec, n, &execution)
-	for _, name := range []string{"run-spec.json", "worker-spec.json", "k6-summary.json", "worker-execution.json"} {
+	for _, name := range []string{"run-spec.json", "worker-spec.json", "vegeta-summary.json", "worker-execution.json"} {
 		raw, err := os.ReadFile(filepath.Join(directory, name))
 		if err == nil {
 			result.References[name] = contract.FileRef{Path: name, SHA256: contract.Digest(raw)}

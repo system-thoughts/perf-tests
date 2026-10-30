@@ -60,11 +60,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	var scriptDir, started, ended, reason string
+	var scriptDir, specPath, started, ended, reason string
 	var code int
 	switch args[0] {
 	case "prepare-input":
 		flags.StringVar(&scriptDir, "script-dir", "/home/k6/fixed-pool", "internal: directory containing the executed workload")
+	case "run":
+		flags.StringVar(&specPath, "spec", "", "internal: validated private worker spec")
 	case "write-report":
 		flags.StringVar(&started, "started-at", "", "internal: local child start UTC RFC3339")
 		flags.StringVar(&ended, "ended-at", "", "internal: local child end UTC RFC3339")
@@ -81,6 +83,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if flags.NArg() != 0 {
 		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected positional arguments")))
+	}
+	if args[0] == "run" {
+		if err := worker.Run(ctx, specPath, stdout); err != nil {
+			return inputError(ctx, stdout, err)
+		}
+		return 0
 	}
 	if args[0] == "prepare-input" {
 		env, err := worker.ReadEnvironment(os.Environ())
@@ -111,22 +119,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if reason != worker.Completed && reason != worker.Failed && reason != worker.Interrupted && reason != worker.StartFailed {
 		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("unknown termination reason")))
 	}
-	pending := filepath.Join(directory, ".k6-summary.json.pending")
-	final := filepath.Join(directory, "k6-summary.json")
-	var publishError error
-	if _, err := os.Stat(pending); err == nil {
-		publishError = os.Link(pending, final)
-		if publishError == nil {
-			publishError = errors.Join(os.Remove(pending), contract.SyncDir(directory))
-		}
-	} else if !os.IsNotExist(err) {
-		publishError = err
-	}
+	final := filepath.Join(directory, "vegeta-summary.json")
 	_, statErr := os.Stat(final)
 	execution := worker.Execution{SchemaVersion: 1, RunID: spec.RunID, WorkerID: spec.WorkerID, ProcessStartedAt: &started, ProcessEndedAt: &ended, ExitCode: &code, TerminationReason: reason, SummaryPresent: statErr == nil, Errors: []worker.Issue{}}
-	if publishError != nil {
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "WORKER_FAILED", Stage: "publish", Message: publishError.Error(), WorkerID: &spec.WorkerID})
-	}
 	switch {
 	case reason == worker.Interrupted || code == 105 || code == 130 || ctx.Err() != nil:
 		execution.TerminationReason = worker.Interrupted
@@ -134,9 +129,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case reason == worker.StartFailed:
 		execution.ProcessStartedAt = nil
 		execution.ExitCode = nil
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "START_FAILED", Stage: "execution", Message: "k6 child could not start", WorkerID: &spec.WorkerID})
+		execution.Errors = append(execution.Errors, worker.Issue{Code: "START_FAILED", Stage: "execution", Message: "Vegeta child could not start", WorkerID: &spec.WorkerID})
 	case code != 0 || reason == worker.Failed:
-		execution.Errors = append(execution.Errors, worker.Issue{Code: "WORKER_FAILED", Stage: "execution", Message: fmt.Sprintf("k6 exited with code %d", code), WorkerID: &spec.WorkerID})
+		execution.Errors = append(execution.Errors, worker.Issue{Code: "WORKER_FAILED", Stage: "execution", Message: fmt.Sprintf("Vegeta exited with code %d", code), WorkerID: &spec.WorkerID})
 	}
 	return report.Write(directory, execution, stdout)
 }

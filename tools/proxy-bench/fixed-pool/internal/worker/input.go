@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dragonflyoss/perf-tests/pkg/proxybench"
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/contract"
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/plan"
 	"github.com/dragonflyoss/perf-tests/tools/proxy-bench/fixed-pool/internal/target"
@@ -45,9 +46,11 @@ var decimal = regexp.MustCompile(`^[0-9]+$`)
 func ReadEnvironment(environ []string) (e Environment, err error) {
 	values := map[string]string{}
 	for _, pair := range environ {
+		// The shared image carries this telemetry flag for its ordinary k6 mode.
+		// It has no effect on Vegeta; other k6 options must not be ignored.
 		key, value, _ := strings.Cut(pair, "=")
 		values[key] = value
-		if key == "MODE" || key == "RANGE" || key == "TARGET_URL" || key == "FILE_SIZE" || key == "CHUNK_SIZE" || key == "STREAMS" || key == "URL_COUNT" || key == "SEED_CLIENT_CPUS" || key == "TAG" || key == "APPLICATION" || key == "CONTENT_ID" || key == "CONTENT_FOR_TASK_ID" || key == "PIECE_LENGTH" || key == "PREFETCH" || key == "HEADERS" || strings.HasPrefix(key, "PROXY_BENCH_") || strings.HasPrefix(key, "X_DRAGONFLY_") {
+		if key == "MODE" || key == "RANGE" || key == "TARGET_URL" || key == "FILE_SIZE" || key == "CHUNK_SIZE" || key == "STREAMS" || key == "URL_COUNT" || key == "SEED_CLIENT_CPUS" || key == "TAG" || key == "APPLICATION" || key == "CONTENT_ID" || key == "CONTENT_FOR_TASK_ID" || key == "PIECE_LENGTH" || key == "PREFETCH" || key == "HEADERS" || (strings.HasPrefix(key, "K6_") && key != "K6_NO_USAGE_REPORT") || strings.HasPrefix(key, "PROXY_BENCH_") || strings.HasPrefix(key, "X_DRAGONFLY_") {
 			return e, fmt.Errorf("%s is not supported by fixed-pool", key)
 		}
 	}
@@ -114,7 +117,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	}
 	e.GracefulStop = duration("GRACEFUL_STOP", e.Timeout+5*time.Second)
 	if err == nil && e.Duration < time.Second {
-		err = fmt.Errorf("DURATION must be at least 1s for the constant-arrival-rate executor")
+		err = fmt.Errorf("DURATION must be at least 1s for fixed-pool")
 	}
 	if err == nil && (e.MaxVUs < e.PreAllocatedVUs || e.GracefulStop <= e.Timeout) {
 		err = fmt.Errorf("MAX_VUS must be >= PRE_ALLOCATED_VUS and GRACEFUL_STOP must exceed TIMEOUT")
@@ -155,8 +158,8 @@ func PrepareInput(ctx context.Context, e Environment, scripts string, stdout io.
 	if err != nil {
 		return contract.Tag(contract.InputInvalid, err)
 	}
-	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version()}
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
+	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version(), "vegeta": proxybench.Version()}
+	for _, name := range []string{"run-benchmark.sh"} {
 		raw, err := os.ReadFile(filepath.Join(scripts, name))
 		if err != nil {
 			return err

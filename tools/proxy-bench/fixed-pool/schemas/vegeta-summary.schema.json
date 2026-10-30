@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vegeta-summary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "worker_id": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "manifest_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "native_summary": {
+      "type": "object"
+    },
+    "effective_options": {
+      "type": "object",
+      "description": "Effective Vegeta options. Durations use nanoseconds."
+    },
+    "engine": {
+      "const": "vegeta"
+    },
+    "engine_version": {
+      "type": "string"
+    },
+    "plan_consumed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expected_status_successes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expected_status_success_ratio": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "canceled_requests": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload_gbps": {
+      "type": "number",
+      "minimum": 0
+    },
+    "interrupted": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "worker_id",
+    "manifest_id",
+    "plan_id",
+    "native_summary",
+    "effective_options",
+    "engine",
+    "engine_version",
+    "plan_consumed",
+    "expected_status_successes",
+    "expected_status_success_ratio",
+    "canceled_requests",
+    "payload_gbps",
+    "interrupted"
+  ]
+}

@@ -51,9 +51,12 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 		})
 	}
 	for _, extra := range []string{"K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
-		if _, err := ReadEnvironment(append(baseEnv(), extra)); err != nil {
-			t.Fatalf("native k6 environment rejected: %v", err)
+		if _, err := ReadEnvironment(append(baseEnv(), extra)); err == nil {
+			t.Fatal("accepted unsupported K6 environment")
 		}
+	}
+	if _, err := ReadEnvironment(append(baseEnv(), "K6_NO_USAGE_REPORT=true")); err != nil {
+		t.Fatalf("image telemetry default rejected: %v", err)
 	}
 	e, err = ReadEnvironment(append(baseEnv(), "TIMEOUT=100ms", "DURATION=5s"))
 	if err != nil || e.GracefulStop != 5100*time.Millisecond {
@@ -219,7 +222,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err = os.MkdirAll(filepath.Join(scripts, "lib"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js"} {
+	for _, name := range []string{"run-benchmark.sh"} {
 		contents := []byte("fixture")
 		if err = os.WriteFile(filepath.Join(scripts, name), contents, 0600); err != nil {
 			t.Fatal(err)

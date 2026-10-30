@@ -33,27 +33,24 @@ child=''
 [ "$interrupted" -eq 0 ] || exit 130
 [ "$prepare_code" -eq 0 ] || exit "$prepare_code"
 
-# Go/k6's proxy transport must see the real environment, without bypasses.
+# Vegeta's proxy transport must see the real environment, without bypasses.
 unset http_proxy https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 export HTTP_PROXY
-K6_NO_USAGE_REPORT=true
-export K6_NO_USAGE_REPORT
 started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 [ "$interrupted" -eq 0 ] || exit 130
-# Use native k6 option precedence; handleSummary records effective test options.
-k6 run --no-color "$SCRIPT_DIR/benchmark.js" &
+proxy-bench-worker-support run --spec "$RESULT_DIR/worker-spec.json" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child
-k6_code=$child_code
+worker_code=$child_code
 child=''
 ended_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 reason=completed
-[ "$k6_code" -eq 0 ] || reason=failed
-if [ "$k6_code" -eq 126 ] || [ "$k6_code" -eq 127 ]; then reason=start_failed; fi
+[ "$worker_code" -eq 0 ] || reason=failed
+if [ "$worker_code" -eq 126 ] || [ "$worker_code" -eq 127 ]; then reason=start_failed; fi
 [ "$interrupted" -eq 0 ] || reason=interrupted
 proxy-bench-worker-support write-report --started-at "$started_at" --ended-at "$ended_at" \
-  --exit-code "$k6_code" --reason "$reason"
+  --exit-code "$worker_code" --reason "$reason"
 report_code=$?
 [ "$interrupted" -eq 0 ] || exit 130
 exit "$report_code"

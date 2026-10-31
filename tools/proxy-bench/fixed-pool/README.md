@@ -22,6 +22,12 @@ publishes the first two images to GHCR and supplies a matching deploy bundle;
 Docker Hub image. Development branches have separate build-specific releases.
 These examples do not change upstream's release process.
 
+For the published k6 baseline, select the matching assets from
+[fixed_pool_refactor-59c90682dad6](https://github.com/system-thoughts/perf-tests/releases/tag/fixed_pool_refactor-59c90682dad6).
+A step-by-step [Chinese VM walkthrough](https://gitcode.com/lvying6/dragonfly-install/blob/fixed_pool_refactor/Nydus全热场景benchamrk用户指南/VM入门-跑通一次完整测试.md)
+explains the inputs, YAML edits, manifest handoff, results and repeated runs.
+Documentation-only commits after that release do not require rebuilding its images.
+
 The main path needs kubectl, usable storage and an existing Dragonfly Seed HTTP
 proxy. No Go installation or host preparation executable is required. The source
 URL must be reachable from the Seed, and the preparation/worker Pods must reach
@@ -197,6 +203,12 @@ no separate report command or required output volume. Job Complete means the
 process completed; it does not mean requests succeeded or the experiment is valid.
 No default 1% failure threshold is installed by fixed-pool. k6's own configured
 thresholds and exit codes still apply.
+
+Request success is separate from load delivery: 100% successful executed requests
+does not mean the actual request rate reached RATE. Dropped iterations were never
+started and are not HTTP failures. For concurrency sizing, inspect the full
+iteration time as well as connecting time; `http_req_duration` excludes the initial
+connection. Capacity acceptance belongs to the operator's test policy.
 
 Save logs if useful, during execution or afterwards. This is optional:
 

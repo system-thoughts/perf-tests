@@ -114,6 +114,16 @@ def read_fields(path):
     return dict(line.split(': ', 1) for line in path.read_text().splitlines() if ': ' in line)
 
 
+def find_release():
+    published = api('/releases/tags/' + VERSION)
+    if published is not None:
+        return published
+    # GitHub's tag endpoint omits unpublished drafts. Match them by tag name.
+    drafts = [r for r in api('/releases?per_page=100') if r['tag_name'] == VERSION]
+    assert len(drafts) <= 1
+    return drafts[0] if drafts else None
+
+
 def download_info(release):
     if release and any(a['name'] == 'build-info.txt' for a in release['assets']):
         gh('release', 'download', VERSION, '--pattern', 'build-info.txt', '--dir', str(DIST), '--clobber')
@@ -149,7 +159,7 @@ def preflight():
     assert api('/git/ref/heads/' + BRANCH)['object']['sha'] == SHA
     assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE, text=True).strip() == SHA
     DIST.mkdir(exist_ok=True)
-    release = api('/releases/tags/' + VERSION)
+    release = find_release()
     if release:
         assert release['target_commitish'] == SHA
     images = {role: inspect(image) for role, image in IMAGES.items()}
@@ -232,7 +242,7 @@ def package(images):
 def publish():
     images = {role: inspect(image, aliases=True) for role, image in IMAGES.items()}
     assets = package(images)
-    release = api('/releases/tags/' + VERSION)
+    release = find_release()
     assert release is None or release['draft']
     note = DIST / 'release.md'
     note.write_text(f'''Development delivery for **{BRANCH}**, fixed-pool engine **{os.environ['LOAD_ENGINE']}**.
@@ -257,7 +267,7 @@ This development publication is not ARM-native, load-generator capacity or scale
     if release is None:
         gh('release', 'create', VERSION, '--target', SHA, '--title', VERSION,
            '--draft', '--prerelease', '--notes-file', str(note))
-        release = api('/releases/tags/' + VERSION)
+        release = find_release()
     for path in assets:
         previous = next((a for a in release['assets'] if a['name'] == path.name), None)
         if previous:

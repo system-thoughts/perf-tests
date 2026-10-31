@@ -61,17 +61,17 @@ jobs:
         id: version
         run: python3 control/.github/scripts/deliver-fixed-pool.py preflight
       - name: Set up Go from the source snapshot
-        if: steps.version.outputs.complete != 'true'
+        if: steps.version.outputs.complete != 'true' && (steps.version.outputs.tools_exists != 'true' || steps.version.outputs.worker_exists != 'true')
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version-file: source/go.mod
           cache-dependency-path: source/go.sum
       - name: Build the source snapshot's static tools
-        if: steps.version.outputs.complete != 'true'
+        if: steps.version.outputs.complete != 'true' && (steps.version.outputs.tools_exists != 'true' || steps.version.outputs.worker_exists != 'true')
         working-directory: source
         run: make build-proxy-bench-tools
       - name: Set up ARM image construction
-        if: steps.version.outputs.complete != 'true'
+        if: steps.version.outputs.complete != 'true' && (steps.version.outputs.tools_exists != 'true' || steps.version.outputs.worker_exists != 'true')
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
         with:
           platforms: arm64

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -21,9 +22,13 @@ def api(path, method='GET'):
         headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                  'Accept': 'application/vnd.github+json',
                  'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'perf-tests-delivery'})
-    with urllib.request.urlopen(request, timeout=45) as response:
-        raw = response.read()
-        return json.loads(raw) if raw else None
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as error:
+        print(method, path, error.code, error.read().decode()[:1000], flush=True)
+        raise
 
 
 def pages(path):
@@ -39,8 +44,8 @@ def pages(path):
 assert os.environ['GITHUB_REPOSITORY'] == REPO
 for branch, sha in EXPECTED.items():
     assert api(f'/repos/{REPO}/git/ref/heads/{branch}')['object']['sha'] == sha, branch
-packages = pages(f'/users/{OWNER}/packages?package_type=container')
-selected = [p for p in packages if (p.get('repository') or {}).get('full_name') == REPO]
+selected = [api(f'/users/{OWNER}/packages/container/' + urllib.parse.quote(name, safe='')) for name in sorted(PACKAGES)]
+assert all((p.get('repository') or {}).get('full_name') == REPO for p in selected)
 assert {p['name'] for p in selected} == PACKAGES, [p['name'] for p in selected]
 report = {'repository': REPO, 'source_heads': EXPECTED, 'packages': [], 'deleted': []}
 out = Path('reset-evidence')

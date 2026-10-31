@@ -27,7 +27,8 @@ def api(path, method='GET'):
             raw = response.read()
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as error:
-        print(method, path, error.code, error.read().decode()[:1000], flush=True)
+        error.detail = error.read().decode()
+        print(method, path, error.code, error.detail[:1000], flush=True)
         raise
 
 
@@ -47,7 +48,7 @@ for branch, sha in EXPECTED.items():
 selected = [api(f'/users/{OWNER}/packages/container/' + urllib.parse.quote(name, safe='')) for name in sorted(PACKAGES)]
 assert all((p.get('repository') or {}).get('full_name') == REPO for p in selected)
 assert {p['name'] for p in selected} == PACKAGES, [p['name'] for p in selected]
-report = {'repository': REPO, 'source_heads': EXPECTED, 'packages': [], 'deleted': []}
+report = {'repository': REPO, 'source_heads': EXPECTED, 'packages': [], 'deleted': [], 'protected': []}
 out = Path('reset-evidence')
 out.mkdir(exist_ok=True)
 for package in selected:
@@ -59,13 +60,21 @@ for package in selected:
 for package in report['packages']:
     for version in package['versions']:
         version_id = int(version['id'])
-        api(package['path'] + f'/versions/{version_id}', 'DELETE')
+        try:
+            api(package['path'] + f'/versions/{version_id}', 'DELETE')
+        except urllib.error.HTTPError as error:
+            if error.code == 400 and '5000 downloads' in error.detail:
+                report['protected'].append({'package': package['metadata']['name'], 'id': version_id,
+                    'digest': version['name'], 'tags': version['metadata']['container']['tags'], 'reason': error.detail})
+                continue
+            raise
         report['deleted'].append({'package': package['metadata']['name'], 'id': version_id,
                                   'digest': version['name'], 'tags': version['metadata']['container']['tags']})
         (out / 'progress.json').write_text(json.dumps(report, indent=2) + '\n')
         time.sleep(1)  # Stay below GitHub's content-generating request limit.
     remaining = pages(package['path'] + '/versions?state=active')
-    assert not remaining, package['metadata']['name']
-report['result'] = 'empty'
+    protected = {v['id'] for v in report['protected'] if v['package'] == package['metadata']['name']}
+    assert {v['id'] for v in remaining} == protected, package['metadata']['name']
+report['result'] = 'protected_remaining' if report['protected'] else 'empty'
 (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
-print(f"Removed {len(report['deleted'])} versions from the two repository packages; both are empty")
+print(f"Removed {len(report['deleted'])} versions; {len(report['protected'])} protected versions remain: {report['result']}")

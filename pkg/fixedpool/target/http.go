@@ -58,8 +58,9 @@ func newClient(c Config) (*http.Client, *http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(proxy)
 	transport.DisableCompression = true
-	// Keep retries explicit and bounded; do not transparently repeat full GETs.
-	transport.DisableKeepAlives = true
+	// Temporary workaround for Seed caching Connection: close in task metadata.
+	// Revert after the Dragonfly Client hop-by-hop header fix is deployed.
+	transport.DisableKeepAlives = false
 	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	return client, transport, nil
 }

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,48 @@ import (
 )
 
 const finishedHeader = "X-Dragonfly-Task-Download-Finished"
+
+func TestPreparationReusesHTTPConnection(t *testing.T) {
+	body := []byte{0x4a, 0x8d, 0x62, 0x96}
+	requests := make(chan *http.Request, 2)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests <- req
+		w.Header().Set(taskHeader, "object-task")
+		w.Header().Set(serverHeader, "192.0.2.10")
+		if req.Header.Get("Range") != "" {
+			w.Header().Set("Content-Range", "bytes 0-3/4")
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		_, _ = w.Write(body)
+	}))
+	defer proxy.Close()
+	config := Config{
+		Target:  Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"},
+		Prepare: Options{RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000},
+	}
+	client, transport, err := newClient(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.CloseIdleConnections()
+	object := contract.Object{ID: 0, Size: 4, SHA256: contract.Digest(body), URL: "http://object.test/0"}
+	var result ObjectResult
+	if err := fullRead(context.Background(), client, config, object, &result); err != nil {
+		t.Fatal(err)
+	}
+	if err := rangeCheck(context.Background(), client, config, object, &result, "range_check"); err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-requests, <-requests
+	for _, req := range []*http.Request{first, second} {
+		if req.Close || req.Header.Get("Connection") != "" {
+			t.Errorf("preparation requested connection closure: close=%v headers=%v", req.Close, req.Header)
+		}
+	}
+	if first.RemoteAddr != second.RemoteAddr {
+		t.Errorf("full GET and Range check used different connections: %s, %s", first.RemoteAddr, second.RemoteAddr)
+	}
+}
 
 func response(status int, body []byte) *http.Response {
 	resp := &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body))}

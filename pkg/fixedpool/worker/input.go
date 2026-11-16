@@ -122,7 +122,7 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 	if err != nil {
 		return contract.Tag(contract.ContractMismatch, contract.Input("PLAN", e.Plan, err))
 	}
-	c, err := target.ReadConfig(e.TargetConfig)
+	c, configSHA256, err := target.ReadConfig(e.TargetConfig)
 	if err != nil {
 		return err
 	}
@@ -155,11 +155,7 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 		}
 		versions[label+"_sha256"] = contract.Digest(raw)
 	}
-	configRaw, err := os.ReadFile(e.TargetConfig)
-	if err != nil {
-		return err
-	}
-	run := RunSpec{SchemaVersion: 1, RunID: e.RunID, Manifest: contract.FileRef{Path: "dataset-manifest.json", SHA256: manifestID}, TargetConfig: contract.FileRef{Path: "target-config.yaml", SHA256: contract.Digest(configRaw)}, TargetPreparation: contract.FileRef{Path: "target-preparation.json", SHA256: contract.Digest(prepRaw)}, Plan: contract.FileRef{Path: "plan/request-plan.json", SHA256: contract.Digest(planRaw)}, Target: c.Target, TotalRate: e.Rate, WorkerCount: p.WorkerCount, DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), Workers: []Allocation{}, ToolVersions: versions}
+	run := RunSpec{SchemaVersion: 1, RunID: e.RunID, Manifest: contract.FileRef{Path: "dataset-manifest.json", SHA256: manifestID}, TargetConfig: contract.FileRef{Path: "target-config.yaml", SHA256: configSHA256}, TargetPreparation: contract.FileRef{Path: "target-preparation.json", SHA256: contract.Digest(prepRaw)}, Plan: contract.FileRef{Path: "plan/request-plan.json", SHA256: contract.Digest(planRaw)}, Target: c.Target, TotalRate: e.Rate, WorkerCount: p.WorkerCount, DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), Workers: []Allocation{}, ToolVersions: versions}
 	for i, s := range p.Shards {
 		run.Workers = append(run.Workers, Allocation{s.WorkerID, s.RegionCount, rates[i]})
 	}

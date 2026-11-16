@@ -97,7 +97,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	digest := contract.Digest(raw)
 	result.ManifestSHA256 = &digest
 	result.ObjectCount = &m.ObjectCount
-	c, err := ReadConfig(s.TargetConfig)
+	c, _, err := ReadConfig(s.TargetConfig)
 	if err != nil {
 		return result, err
 	}

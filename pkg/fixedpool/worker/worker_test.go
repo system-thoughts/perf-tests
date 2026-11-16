@@ -95,8 +95,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	config := target.Config{SchemaVersion: 1, Target: target.Target{Ref: "seed", Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}, Prepare: target.Options{Concurrency: 1, RequestTimeoutMS: 1000, ReadyTimeoutMS: 1000}}
 	// JSON is a strict subset of YAML, accepted by the target-config reader.
 	configPath := filepath.Join(dir, "target-config.yaml")
-	save(t, configPath, config)
-	_, err = target.ReadConfig(configPath)
+	configRaw := save(t, configPath, config)
+	_, _, err = target.ReadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	}
 	if run.TotalRate != 100 || run.WorkerCount != 2 || run.RunID != env.RunID ||
 		run.Manifest.Path != "dataset-manifest.json" || run.Plan.Path != "plan/request-plan.json" ||
-		run.TargetConfig.Path != "target-config.yaml" || run.TargetPreparation.Path != "target-preparation.json" {
+		run.TargetConfig.Path != "target-config.yaml" || run.TargetConfig.SHA256 != contract.Digest(configRaw) ||
+		run.TargetPreparation.Path != "target-preparation.json" {
 		t.Fatalf("incorrect public context: %+v", run)
 	}
 	if run.ToolVersions["shared_lib_summary.js_sha256"] != contract.Digest([]byte(sharedSummary)) {

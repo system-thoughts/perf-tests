@@ -62,7 +62,8 @@ type Config struct {
 	Prepare       Options `json:"prepare"`
 }
 
-func ReadConfig(name string) (c Config, err error) {
+// ReadConfig validates and fingerprints the same file bytes.
+func ReadConfig(name string) (c Config, digest string, err error) {
 	defer func() {
 		if err != nil {
 			err = contract.Input("TARGET_CONFIG", name, err)
@@ -70,30 +71,30 @@ func ReadConfig(name string) (c Config, err error) {
 	}()
 	raw, err := os.ReadFile(name)
 	if err != nil {
-		return c, contract.Tag(contract.InputInvalid, err)
+		return c, "", contract.Tag(contract.InputInvalid, err)
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var node yaml.Node
 	if err := decoder.Decode(&node); err != nil {
-		return c, contract.Tag(contract.ContractMismatch, err)
+		return c, "", contract.Tag(contract.ContractMismatch, err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
+		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
 	}
 	value, err := yamlValue(&node)
 	if err != nil {
-		return c, contract.Tag(contract.ContractMismatch, err)
+		return c, "", contract.Tag(contract.ContractMismatch, err)
 	}
 	fields, ok := value.(map[string]any)
 	if !ok {
-		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
+		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
 	}
 	defaults := map[string]any{"concurrency": uint64(1), "request_timeout_ms": uint64(1800000), "ready_timeout_ms": uint64(60000)}
 	if opts, exists := fields["prepare"]; exists {
 		options, ok := opts.(map[string]any)
 		if !ok {
-			return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("prepare must be a mapping"))
+			return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("prepare must be a mapping"))
 		}
 		for key, value := range defaults {
 			if _, exists := options[key]; !exists {
@@ -111,9 +112,9 @@ func ReadConfig(name string) (c Config, err error) {
 		err = validateConfig(c)
 	}
 	if err != nil {
-		return c, contract.Tag(contract.ContractMismatch, err)
+		return c, "", contract.Tag(contract.ContractMismatch, err)
 	}
-	return c, nil
+	return c, contract.Digest(raw), nil
 }
 
 func validateConfig(c Config) error {

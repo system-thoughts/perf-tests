@@ -309,12 +309,15 @@ func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 			if err := os.WriteFile(path, []byte(original+test.suffix), 0600); err != nil {
 				t.Fatal(err)
 			}
-			config, err := ReadConfig(path)
+			config, digest, err := ReadConfig(path)
 			if test.name == "defaults" || test.name == "custom" {
 				if err != nil || config.Prepare.Concurrency == 0 || config.Prepare.RequestTimeoutMS == 0 || config.Prepare.ReadyTimeoutMS == 0 {
 					t.Fatalf("%+v %v", config, err)
 				}
-			} else if err == nil {
+				if digest != contract.Digest([]byte(original+test.suffix)) {
+					t.Fatal("config digest does not match the original YAML bytes")
+				}
+			} else if err == nil || digest != "" {
 				t.Fatal("accepted invalid business constraint")
 			}
 		})
@@ -327,7 +330,7 @@ func TestRemovedInstanceConfigurationRejected(t *testing.T) {
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "instance_ref") {
+	if _, _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "instance_ref") {
 		t.Fatalf("missing field/path diagnostic: %v", err)
 	}
 }

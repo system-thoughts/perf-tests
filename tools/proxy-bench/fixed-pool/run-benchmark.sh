@@ -23,7 +23,7 @@ wait_child() {
   fi
 }
 trap forward_signal INT TERM
-proxy-bench-worker-support prepare-input --script-dir "$SCRIPT_DIR" --output "$WORKER_SPEC" &
+proxy-bench-worker-support --script-dir "$SCRIPT_DIR" --output "$WORKER_SPEC" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child

@@ -44,7 +44,6 @@ type Result struct {
 	ManifestSHA256   string            `json:"manifest_sha256"`
 	GeneratedObjects uint64            `json:"generated_objects"`
 	GeneratedBytes   uint64            `json:"generated_bytes"`
-	TemporaryState   string            `json:"temporary_state"`
 	Manifest         contract.Manifest `json:"-"`
 }
 
@@ -78,9 +77,9 @@ func Prepare(ctx context.Context, spec Spec) (result Result, err error) {
 	if err := os.Mkdir(state, 0700); err != nil {
 		return result, err
 	}
-	result.TemporaryState = state
+	incomplete := true
 	defer func() {
-		if err == nil || result.TemporaryState == "" {
+		if err == nil || !incomplete {
 			return
 		}
 		failure := struct {
@@ -145,7 +144,7 @@ func Prepare(ctx context.Context, spec Spec) (result Result, err error) {
 	if err := os.RemoveAll(state); err != nil {
 		return result, err
 	}
-	result.TemporaryState = ""
+	incomplete = false
 	return result, contract.SyncDir(root)
 }
 

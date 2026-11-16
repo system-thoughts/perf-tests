@@ -42,10 +42,6 @@ func Geometry(size, count, rangeBytes, workers uint64) (perObject, total uint64,
 	return perObject, total, nil
 }
 
-func Permutation(count uint64) ([]uint32, error) {
-	return permutation(context.Background(), count)
-}
-
 func permutation(ctx context.Context, count uint64) ([]uint32, error) {
 	if count == 0 || count > contract.MaxRegions {
 		return nil, fmt.Errorf("region_count outside uint32 range")
@@ -147,16 +143,4 @@ func AllocateRates(counts []uint64, totalRate uint64) ([]uint64, error) {
 		}
 	}
 	return rates, nil
-}
-
-func Region(p contract.Plan, g uint64) (object, offset, end uint64, err error) {
-	if g >= p.RegionCount || p.RegionsPerObject == 0 || p.RangeBytes == 0 || p.RangeBytes > contract.MaxSafeInteger {
-		return 0, 0, 0, fmt.Errorf("invalid region geometry")
-	}
-	index := g % p.RegionsPerObject
-	if index > (contract.MaxSafeInteger-p.RangeBytes)/p.RangeBytes {
-		return 0, 0, 0, fmt.Errorf("region offset/end outside exact integer range")
-	}
-	offset = index * p.RangeBytes
-	return g / p.RegionsPerObject, offset, offset + p.RangeBytes - 1, nil
 }

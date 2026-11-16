@@ -30,18 +30,17 @@ type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestInternalInterfaceRejectsUnknownArguments(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"prepare-input", "--rate", "5"}, {"prepare-input", "extra"}, {"write-report", "--unknown"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"--rate", "5"}, {"--output", "input.json", "extra"}, {"prepare-input", "--output", "input.json"}} {
 		var out, diagnostic strings.Builder
 		if got := run(context.Background(), args, &out, &diagnostic); got != 2 || !strings.Contains(out.String(), "INPUT_INVALID") {
 			t.Fatalf("%v code=%d out=%s", args, got, out.String())
 		}
 	}
-	for _, name := range []string{"prepare-input"} {
-		if got := run(context.Background(), []string{name, "--help"}, io.Discard, io.Discard); got != 0 {
-			t.Fatal(got)
-		}
+	if got := run(context.Background(), []string{"--help"}, io.Discard, io.Discard); got != 0 {
+		t.Fatal(got)
 	}
 }
+
 func TestInputErrorClassification(t *testing.T) {
 	err := contract.Tag(contract.ContractMismatch, errors.New("input mismatch"))
 	if got := inputError(context.Background(), brokenWriter{}, err); got != 2 {

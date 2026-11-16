@@ -54,14 +54,11 @@ func inputError(ctx context.Context, stdout io.Writer, err error) int {
 	}
 }
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "prepare-input" {
-		return inputError(ctx, stdout, contract.Tag(contract.InputInvalid, fmt.Errorf("internal subcommand required: prepare-input")))
-	}
-	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	flags := flag.NewFlagSet("proxy-bench-worker-support", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	scripts := flags.String("script-dir", "/home/k6/fixed-pool", "internal: directory containing the executed workload")
 	output := flags.String("output", "", "internal: temporary k6 input file")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}

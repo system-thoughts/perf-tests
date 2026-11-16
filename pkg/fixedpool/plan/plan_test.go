@@ -42,7 +42,7 @@ func TestPermutationAndRateVectors(t *testing.T) {
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Permutation(8)
+	got, err := permutation(context.Background(), 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestPermutationAndRateVectors(t *testing.T) {
 		}
 	}
 	for count := uint64(1); count < 200; count++ {
-		got, err := Permutation(count)
+		got, err := permutation(context.Background(), count)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,16 +115,6 @@ func TestIntegerAndResourceBoundaries(t *testing.T) {
 	if _, err := Estimate(^uint64(0), 8, 3); err == nil {
 		t.Fatal("estimate overflow accepted")
 	}
-	p := contract.Plan{RegionCount: 8, RegionsPerObject: 4, RangeBytes: 16}
-	for _, v := range [][4]uint64{{0, 0, 0, 15}, {3, 0, 48, 63}, {4, 1, 0, 15}, {7, 1, 48, 63}} {
-		object, offset, end, err := Region(p, v[0])
-		if err != nil || [3]uint64{object, offset, end} != [3]uint64{v[1], v[2], v[3]} {
-			t.Fatalf("region %d=%d/%d/%d %v", v[0], object, offset, end, err)
-		}
-	}
-	if _, _, _, err := Region(p, 8); err == nil {
-		t.Fatal("out-of-bounds region accepted")
-	}
 }
 
 func fixture(t *testing.T) (contract.Manifest, []byte, Spec) {
@@ -159,7 +149,7 @@ func TestPlanPublishConflictsAndGeometryChanges(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0755 {
 		t.Fatalf("published plan directory must permit other container UIDs to read/traverse: %v, %v", info, err)
 	}
-	p, raw, actual, err := Load(context.Background(), result.Path, m, contract.Digest(data))
+	p, raw, actual, err := load(context.Background(), result.Path, m, contract.Digest(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +319,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 				overwrite(t, result.Path, encoded)
 			}
 			if kind == "duplicate region" {
-				expected, err := Permutation(8)
+				expected, err := permutation(context.Background(), 8)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -338,7 +328,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 				}
 				return
 			}
-			_, _, _, err = Load(context.Background(), result.Path, m, contract.Digest(data))
+			_, _, _, err = load(context.Background(), result.Path, m, contract.Digest(data), nil)
 			if err == nil {
 				t.Fatal("corrupt plan accepted")
 			}
@@ -397,10 +387,10 @@ func TestPublicationAndConsumptionValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	overwrite(t, result.Path, encoded)
-	if _, _, _, err := Load(context.Background(), result.Path, m, contract.Digest(data)); err != nil {
+	if _, _, _, err := load(context.Background(), result.Path, m, contract.Digest(data), nil); err != nil {
 		t.Fatalf("consumer repeated canonical order validation: %v", err)
 	}
-	expected, err := Permutation(p.RegionCount)
+	expected, err := permutation(context.Background(), p.RegionCount)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -115,7 +115,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	evidenceRaw := save(t, filepath.Join(dir, "target-object-results.json"), objects)
 	evidenceRef := contract.FileRef{Path: "target-object-results.json", SHA256: contract.Digest(evidenceRaw)}
 	manifestID := data.ManifestSHA256
-	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, PieceStrategy: "auto", Target: &target.PreparedTarget{Ref: config.Target.Ref, Proxy: config.Target.Proxy, ExpectedServerIP: config.Target.ExpectedServerIP}, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
+	prep := target.Result{SchemaVersion: 1, PreparationID: "test-preparation", ManifestSHA256: &manifestID, PieceStrategy: "auto", Target: &target.Target{Ref: config.Target.Ref, Proxy: config.Target.Proxy, ExpectedServerIP: config.Target.ExpectedServerIP}, Prepare: &config.Prepare, Method: target.Method, StartedAt: begin, EndedAt: end, Status: target.StatusReady, ObjectCount: &data.Manifest.ObjectCount, EvidenceFile: &evidenceRef, Errors: []target.Issue{}}
 	prepPath := filepath.Join(dir, "target-preparation.json")
 	prepRaw := save(t, prepPath, prep)
 	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err != nil {
@@ -157,14 +157,11 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 			t.Fatalf("missing field/value diagnosis: %v", err)
 		}
 	}
-	// Historical labels/rule digest do not change the verified data/target.
+	// A display label does not change the verified data/target.
 	prep.Target.Ref = "renamed target"
-	prep.Target.InstanceRef = "historical-instance"
-	identity := strings.Repeat("a", 64)
-	prep.IdentitySHA256 = &identity
 	prepRaw = save(t, prepPath, prep)
 	if err = CheckPreparation(prepRaw, prepPath, data.Manifest, manifestID, config); err != nil {
-		t.Fatalf("historical label rejected: %v", err)
+		t.Fatalf("display label rejected: %v", err)
 	}
 	badTarget := config
 	badTarget.Target.ExpectedServerIP = "192.0.2.2"

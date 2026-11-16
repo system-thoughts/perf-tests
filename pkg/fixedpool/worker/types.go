@@ -24,11 +24,9 @@ import (
 const Prefix = "PROXY_BENCH_FIXED_POOL_"
 
 type Issue struct {
-	Code     string  `json:"code"`
-	Stage    string  `json:"stage"`
-	Message  string  `json:"message"`
-	WorkerID *uint64 `json:"worker_id,omitempty"`
-	Path     string  `json:"path,omitempty"`
+	Code    string `json:"code"`
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
 }
 type Allocation struct {
 	WorkerID    uint64 `json:"worker_id"`

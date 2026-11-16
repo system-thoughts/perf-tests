@@ -31,10 +31,6 @@ import (
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 )
 
-func Load(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string) (contract.Plan, []byte, uint64, error) {
-	return load(ctx, name, manifest, manifestSHA, nil)
-}
-
 // LoadWorker validates common metadata and only the selected shard's bytes.
 // Other workers' files need not be mounted in this process.
 func LoadWorker(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, worker uint64) (contract.Plan, []byte, uint64, error) {

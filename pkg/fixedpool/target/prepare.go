@@ -53,22 +53,12 @@ type ObjectResults struct {
 	Objects       []ObjectResult `json:"objects"`
 }
 
-// PreparedTarget accepts the former instance label only when reading evidence.
-// It is omitted by the producer and never participates in target validation.
-type PreparedTarget struct {
-	Ref              string `json:"ref,omitempty"`
-	Proxy            string `json:"proxy"`
-	ExpectedServerIP string `json:"expected_server_ip"`
-	InstanceRef      string `json:"instance_ref,omitempty"`
-}
-
 type Result struct {
 	SchemaVersion  int               `json:"schema_version"`
 	PreparationID  string            `json:"preparation_id"`
 	ManifestSHA256 *string           `json:"manifest_sha256"`
-	IdentitySHA256 *string           `json:"identity_sha256,omitempty"`
 	PieceStrategy  string            `json:"piece_strategy"`
-	Target         *PreparedTarget   `json:"target"`
+	Target         *Target           `json:"target"`
 	Prepare        *Options          `json:"prepare"`
 	Method         string            `json:"method"`
 	StartedAt      string            `json:"started_at"`
@@ -111,7 +101,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	if err != nil {
 		return result, err
 	}
-	result.Target = &PreparedTarget{Ref: c.Target.Ref, Proxy: c.Target.Proxy, ExpectedServerIP: c.Target.ExpectedServerIP}
+	result.Target = &Target{Ref: c.Target.Ref, Proxy: c.Target.Proxy, ExpectedServerIP: c.Target.ExpectedServerIP}
 	result.Prepare = &c.Prepare
 	lock, err := contract.AcquireLock(s.Out, ".prepare.lock")
 	if err != nil {

@@ -40,25 +40,30 @@ func load(ctx context.Context, name string, manifest contract.Manifest, manifest
 	return loadSelected(ctx, name, manifest, manifestSHA, expected, nil)
 }
 func loadSelected(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32, selected *uint64) (p contract.Plan, raw []byte, actual uint64, err error) {
+	defer func() {
+		if err != nil {
+			err = contract.Input("PLAN", name, err)
+		}
+	}()
 	raw, err = os.ReadFile(name)
 	if err != nil {
-		return p, nil, 0, contract.Input("PLAN", name, err)
+		return p, nil, 0, err
 	}
 	if err := contract.Decode(raw, &p); err != nil {
-		return p, nil, 0, contract.Input("PLAN", name, err)
+		return p, nil, 0, err
 	}
 	if p.SchemaVersion != 1 || p.Algorithm != contract.OrderAlgorithm || p.Seed != contract.OrderSeed || p.ManifestSHA256 != manifestSHA {
-		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("schema_version/algorithm/seed/manifest_sha256: expected 1/%s/%s/%s, actual %d/%s/%s/%s", contract.OrderAlgorithm, contract.OrderSeed, manifestSHA, p.SchemaVersion, p.Algorithm, p.Seed, p.ManifestSHA256))
+		return p, nil, 0, fmt.Errorf("schema_version/algorithm/seed/manifest_sha256: expected 1/%s/%s/%s, actual %d/%s/%s/%s", contract.OrderAlgorithm, contract.OrderSeed, manifestSHA, p.SchemaVersion, p.Algorithm, p.Seed, p.ManifestSHA256)
 	}
 	perObject, total, err := Geometry(manifest.ObjectSize, manifest.ObjectCount, p.RangeBytes, p.WorkerCount)
 	if err != nil {
 		return p, nil, 0, err
 	}
 	if p.RegionsPerObject != perObject || p.RegionCount != total || uint64(len(p.Shards)) != p.WorkerCount {
-		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("region metadata mismatch: expected regions_per_object=%d region_count=%d worker_count=%d, actual %d/%d/%d", perObject, total, p.WorkerCount, p.RegionsPerObject, p.RegionCount, len(p.Shards)))
+		return p, nil, 0, fmt.Errorf("region metadata mismatch: expected regions_per_object=%d region_count=%d worker_count=%d, actual %d/%d/%d", perObject, total, p.WorkerCount, p.RegionsPerObject, p.RegionCount, len(p.Shards))
 	}
 	if selected != nil && *selected >= p.WorkerCount {
-		return p, nil, 0, contract.Input("PLAN", name, fmt.Errorf("WORKER_ID %d outside worker_count %d", *selected, p.WorkerCount))
+		return p, nil, 0, fmt.Errorf("WORKER_ID %d outside worker_count %d", *selected, p.WorkerCount)
 	}
 	directory := filepath.Dir(name)
 	actual = uint64(len(raw))

@@ -332,6 +332,9 @@ func TestCorruptPlanRejected(t *testing.T) {
 			if err == nil {
 				t.Fatal("corrupt plan accepted")
 			}
+			if strings.Count(err.Error(), "PLAN \""+result.Path+"\":") != 1 {
+				t.Fatalf("expected one root plan context: %v", err)
+			}
 			want := map[string]string{
 				"out of bounds": "region[2]: expected integer in [0,8), actual 8",
 				"extra region":  "region[3]: unexpected extra entry; expected 3 regions",

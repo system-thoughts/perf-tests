@@ -120,7 +120,7 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 	manifestID := contract.Digest(manifestRaw)
 	p, planRaw, _, err := plan.LoadWorker(ctx, e.Plan, m, manifestID, e.WorkerID)
 	if err != nil {
-		return contract.Tag(contract.ContractMismatch, contract.Input("PLAN", e.Plan, err))
+		return contract.Tag(contract.ContractMismatch, err)
 	}
 	c, configSHA256, err := target.ReadConfig(e.TargetConfig)
 	if err != nil {

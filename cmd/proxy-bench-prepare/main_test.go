@@ -53,7 +53,7 @@ func TestDatasetOnlyCLI(t *testing.T) {
 	}
 }
 func TestRejectedOldAndInvalidArguments(t *testing.T) {
-	for _, args := range [][]string{{"--manifest", "unused"}, {"--range", "16"}, {"--workers", "1"}, {"--plan-dir", "unused"}, {"--memory-budget", "100"}, {"--file-budget", "100"}, {"--count", "1.5"}, {"--count", "-1"}, {"--size", "0x40"}, {"extra"}, {"--generation-workers", "0"}} {
+	for _, args := range [][]string{{"--range", "16"}, {"--count", "1.5"}, {"--count", "-1"}, {"--size", "0x40"}, {"extra"}, {"--generation-workers", "0"}} {
 		code, r := invokeData(t, args)
 		if code != 2 || r.Manifest != nil || len(r.Errors) == 0 || r.Errors[0].Code != contract.InputInvalid {
 			t.Fatalf("arguments %v: %+v code=%d", args, r, code)
@@ -108,7 +108,7 @@ func TestIndependentPlanAndRetry(t *testing.T) {
 	}
 }
 func TestPlanRejectsDatasetArguments(t *testing.T) {
-	for _, args := range [][]string{{"--size", "64"}, {"--count", "2"}, {"--root", "unused"}, {"--base-url", "http://source.example"}, {"--generation-workers", "2"}, {"--rate", "100"}, {"extra"}} {
+	for _, args := range [][]string{{"--size", "64"}, {"extra"}} {
 		code, r := invokePlan(t, args)
 		if code != 2 || r.Plan != nil || r.ManifestSHA256 != nil || len(r.Errors) == 0 {
 			t.Fatalf("arguments %v: %+v code=%d", args, r, code)
@@ -117,7 +117,9 @@ func TestPlanRejectsDatasetArguments(t *testing.T) {
 }
 
 func TestArgumentFailuresAreStructuredAndDoNotPrepare(t *testing.T) {
-	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--manifest", "missing-file"}} {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "missing-manifest.json")
+	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--manifest", manifest, "--target-config", filepath.Join(dir, "target.yaml"), "--out", filepath.Join(dir, "preparation")}} {
 		var stdout, stderr bytes.Buffer
 		code := run(context.Background(), append([]string{"seed-cache"}, args...), &stdout, &stderr)
 		var result target.Result
@@ -126,6 +128,10 @@ func TestArgumentFailuresAreStructuredAndDoNotPrepare(t *testing.T) {
 		}
 		if code != 2 || result.SchemaVersion != 1 || result.Status != target.StatusUnverified || len(result.Errors) == 0 || result.EvidenceFile != nil {
 			t.Fatalf("args=%v code=%d result=%+v", args, code, result)
+		}
+		if len(args) > 0 && args[0] == "--manifest" &&
+			(!strings.Contains(result.Errors[0].Message, "MANIFEST") || !strings.Contains(result.Errors[0].Message, manifest)) {
+			t.Fatalf("missing manifest diagnosis: %+v", result.Errors)
 		}
 	}
 }

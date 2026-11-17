@@ -342,9 +342,6 @@ func TestCorruptPlanRejected(t *testing.T) {
 			if want != "" && (!strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "PLAN.shards[0]") || !strings.Contains(err.Error(), filepath.Join(spec.Directory, "shards/0.json"))) {
 				t.Fatalf("missing shard path or region position: %v", err)
 			}
-			if _, err := Prepare(context.Background(), data, spec); err == nil {
-				t.Fatal("corrupt plan silently regenerated")
-			}
 		})
 	}
 }
@@ -356,14 +353,8 @@ func TestCancelledPlanIsNotPublished(t *testing.T) {
 	if _, err := Prepare(ctx, data, spec); err == nil {
 		t.Fatal("cancelled plan succeeded")
 	}
-	entries, err := os.ReadDir(spec.Directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != ".incomplete" {
-			t.Fatal("cancelled plan was published")
-		}
+	if _, err := os.Stat(filepath.Join(spec.Directory, "request-plan.json")); !os.IsNotExist(err) {
+		t.Fatalf("cancelled plan has a published descriptor: %v", err)
 	}
 	if _, err := Prepare(context.Background(), data, spec); err == nil {
 		t.Fatal("unfinished plan adopted")

@@ -317,6 +317,12 @@ func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 				if digest != contract.Digest([]byte(original+test.suffix)) {
 					t.Fatal("config digest does not match the original YAML bytes")
 				}
+				if test.name == "custom" {
+					want := Options{Concurrency: 2, RequestTimeoutMS: 1000, ReadyTimeoutMS: 200}
+					if config.Prepare != want {
+						t.Fatalf("custom options=%+v, want %+v", config.Prepare, want)
+					}
+				}
 			} else if err == nil || digest != "" {
 				t.Fatal("accepted invalid business constraint")
 			}

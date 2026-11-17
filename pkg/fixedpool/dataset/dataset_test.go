@@ -55,7 +55,7 @@ func TestContentVectorsAndTails(t *testing.T) {
 		if err := Generate(context.Background(), &body, uint64(id), fixture.Size); err != nil {
 			t.Fatal(err)
 		}
-		if body.Len() != 64 || len(body.Bytes()[:16]) != 16 || id == 0 && !bytes.Equal(body.Bytes()[:16], prefix) || contract.Digest(body.Bytes()) != want {
+		if body.Len() != 64 || id == 0 && !bytes.Equal(body.Bytes()[:16], prefix) || contract.Digest(body.Bytes()) != want {
 			t.Fatalf("object %d vector mismatch", id)
 		}
 	}

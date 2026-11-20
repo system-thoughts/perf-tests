@@ -18,9 +18,7 @@ package target
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -61,12 +59,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	if err != nil {
 		return result, err
 	}
-	lock, err := contract.AcquireLock(s.Out, ".prepare.lock")
-	if err != nil {
-		return result, contract.Tag(contract.DataConflict, err)
-	}
-	defer func() { err = errors.Join(err, lock.Close()) }()
-	if err := contract.RequireEmpty(s.Out, ".prepare.lock"); err != nil {
+	if err := contract.PrepareOutput(s.Out, "target-preparation.json", ".target-preparation.json.tmp"); err != nil {
 		return result, err
 	}
 	started := timestamp()
@@ -130,27 +123,17 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 		err = ctx.Err()
 	}
 	if err == nil {
-		err = publish(s.Out, "target-preparation.json", result.PreparationID, data)
+		temporary := filepath.Join(s.Out, ".target-preparation.json.tmp")
+		err = contract.WriteFile(temporary, data)
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err == nil {
+			err = contract.Publish(temporary, filepath.Join(s.Out, "target-preparation.json"))
+		}
 	}
 	if err != nil {
 		result.Status = ""
 	}
 	return result, err
-}
-
-func publish(directory, name, id string, data []byte) error {
-	temporary := filepath.Join(directory, "."+name+".tmp-"+id)
-	if err := contract.WriteFile(temporary, data); err != nil {
-		return err
-	}
-	destination := filepath.Join(directory, name)
-	if err := os.Link(temporary, destination); err != nil {
-		return err
-	}
-	if err := contract.SyncDir(directory); err != nil {
-		return errors.Join(err, os.Remove(destination))
-	}
-	// The complete record is published. Cleanup cannot turn it into a failed preparation.
-	_ = os.Remove(temporary)
-	return nil
 }

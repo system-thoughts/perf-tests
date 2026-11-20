@@ -180,7 +180,7 @@ func TestRangeResponseIntegrity(t *testing.T) {
 }
 
 func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
-	for _, mode := range []string{"ready", "bad-second-object", "cancelled", "conflict"} {
+	for _, mode := range []string{"ready", "unrelated", "bad-second-object", "cancelled", "conflict"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			bodies := [][]byte{{0x4a, 0x8d, 0x62, 0x96}, {0xaa, 0x79, 0x30, 0xca}}
@@ -221,6 +221,14 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			record := filepath.Join(out, "target-preparation.json")
+			if mode == "unrelated" {
+				if err := os.Mkdir(out, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(out, "notes"), []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if mode == "cancelled" {
 				cancel()
 			}
@@ -234,7 +242,7 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 			}
 			result, err := Prepare(ctx, Spec{Manifest: manifest, TargetConfig: config, Out: out, Options: Options{Concurrency: 1, RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000}})
 			data, readErr := os.ReadFile(record)
-			if mode == "ready" {
+			if mode == "ready" || mode == "unrelated" {
 				if err != nil || readErr != nil || result.Status != StatusReady {
 					t.Fatalf("%+v %v %v", result, err, readErr)
 				}

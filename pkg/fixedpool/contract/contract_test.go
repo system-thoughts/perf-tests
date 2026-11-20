@@ -135,29 +135,35 @@ func TestSourceURL(t *testing.T) {
 	}
 }
 
-func TestSingleWriterAndSpace(t *testing.T) {
-	directory := t.TempDir()
-	first, err := AcquireLock(directory, ".lock")
-	if err != nil {
+func TestOutputPublicationAndSpace(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes"), []byte("unrelated"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if second, err := AcquireLock(directory, ".lock"); err == nil {
-		if err := second.Close(); err != nil {
-			t.Fatal(err)
-		}
-		t.Fatal("concurrent writer acquired lock")
-	}
-	if err := first.Close(); err != nil {
+	if err := PrepareOutput(dir, "result.json", ".result.json.tmp"); err != nil {
 		t.Fatal(err)
 	}
-	next, err := AcquireLock(directory, ".lock")
-	if err != nil {
+	temporary, final := filepath.Join(dir, ".result.json.tmp"), filepath.Join(dir, "result.json")
+	if err := WriteFile(temporary, []byte("complete")); err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Close(); err != nil {
+	if err := Publish(temporary, final); err != nil {
 		t.Fatal(err)
 	}
-	if err := RequireSpace(directory, ^uint64(0)); err == nil {
+	if err := PrepareOutput(dir, "result.json"); ErrorCode(err) != DataConflict {
+		t.Fatalf("accepted existing output: %v", err)
+	}
+	if err := WriteFile(temporary, []byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Publish(temporary, final); ErrorCode(err) != DataConflict {
+		t.Fatalf("publication replaced a result: %v", err)
+	}
+	data, err := os.ReadFile(final)
+	if err != nil || string(data) != "complete" {
+		t.Fatalf("damaged result %q %v", data, err)
+	}
+	if err := RequireSpace(dir, ^uint64(0)); err == nil {
 		t.Fatal("accepted impossible space request")
 	}
 }

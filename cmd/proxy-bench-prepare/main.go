@@ -92,7 +92,7 @@ func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	var spec dataset.Spec
 	var generationWorkers uint64
-	flags.StringVar(&spec.Root, "root", "", "required: empty source data directory (single writer)")
+	flags.StringVar(&spec.Root, "root", "", "required: source directory; one writer, existing owned outputs are not replaced")
 	flags.StringVar(&spec.BaseURL, "base-url", "", "required: source HTTP base URL reachable by the Seed")
 	command.DecimalFlag(flags, &spec.Size, "size", 0, "required: positive decimal object size in bytes")
 	command.DecimalFlag(flags, &spec.Count, "count", 0, "required: positive decimal object count")
@@ -149,7 +149,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var name string
 	var spec plan.Spec
 	flags.StringVar(&name, "manifest", "", "required: path to the input dataset manifest")
-	flags.StringVar(&spec.Directory, "out", "", "required: new or empty output directory for this plan")
+	flags.StringVar(&spec.Directory, "out", "", "required: plan output directory; one writer, existing plan/shards are not replaced")
 	command.DecimalFlag(flags, &spec.RangeBytes, "range", 0, "required: positive decimal Range size in bytes")
 	command.DecimalFlag(flags, &spec.Workers, "workers", 1, "optional: number of load-generator shards (default 1)")
 	command.DecimalFlag(flags, &spec.MemoryBudget, "memory-budget", 0, "optional: positive estimated plan-memory budget in bytes (omitted: no budget)")
@@ -210,7 +210,7 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var spec target.Spec
 	flags.StringVar(&spec.Manifest, "manifest", "", "required: immutable dataset manifest")
 	flags.StringVar(&spec.TargetConfig, "target-config", "", "required: target YAML with proxy and expected server IP")
-	flags.StringVar(&spec.Out, "out", "", "required: new or empty output directory; never overwrite results")
+	flags.StringVar(&spec.Out, "out", "", "required: output directory; one writer, existing records are not replaced")
 	command.DecimalFlag(flags, &spec.Options.Concurrency, "concurrency", 1, "optional: concurrent object preparations (default 1)")
 	command.DecimalFlag(flags, &spec.Options.RequestTimeoutMS, "request-timeout-ms", 1800000, "optional: full GET timeout in milliseconds (default 1800000)")
 	command.DecimalFlag(flags, &spec.Options.ReadyTimeoutMS, "ready-timeout-ms", 60000, "optional: total Range check budget in milliseconds (default 60000)")
@@ -231,7 +231,7 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	_, code := command.Issues(ctx, "target_prepare", err)
 	if err != nil {
 		diagnostic(stderr, "seed-cache", fmt.Errorf("MANIFEST %q TARGET_CONFIG %q OUT %q: %w", spec.Manifest, spec.TargetConfig, spec.Out, err))
-		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target and a new or explicitly cleaned --out. This command does not clear the Seed cache.\n")
+		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target; reuse a valid success record downstream, or explicitly clean conflicting output items or select another --out. This command does not clear the Seed cache.\n")
 		return code
 	}
 	_, err = fmt.Fprintf(stdout, "Seed prepared: MANIFEST=%q sha256=%s objects=%d target=%s expected_server_ip=%s record=%q\n", spec.Manifest, result.ManifestSHA256, result.ObjectCount, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out+"/target-preparation.json")

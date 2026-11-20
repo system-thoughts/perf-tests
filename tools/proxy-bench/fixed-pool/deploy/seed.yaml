@@ -1,5 +1,5 @@
 # Edit the target here; workers consume the successful preparation record. 192.0.2.10 is a documentation address.
-# This Job is independent of plan.yaml. Select a new/empty --out; the command does not clear Seed cache.
+# This Job is independent of plan.yaml. Use one preparer per output location; existing records are not replaced; the command does not clear Seed cache.
 apiVersion: v1
 kind: ConfigMap
 metadata:

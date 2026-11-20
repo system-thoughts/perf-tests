@@ -19,34 +19,57 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"syscall"
 )
 
-type Lock struct{ file *os.File }
-
-func AcquireLock(directory, name string) (*Lock, error) {
+// PrepareOutput checks only the paths owned by this action. Callers guarantee one writer.
+func PrepareOutput(directory string, names ...string) error {
 	if err := os.MkdirAll(directory, 0755); err != nil {
-		return nil, err
+		return OutputError(directory, err)
 	}
 	info, err := os.Lstat(directory)
-	if err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("directory must be a real directory: %s", directory)
-	}
-	fd, err := syscall.Open(filepath.Join(directory, name), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if err != nil {
-		return nil, err
+		return OutputError(directory, err)
 	}
-	file := os.NewFile(uintptr(fd), name)
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.Join(fmt.Errorf("another writer holds %s: %w", directory, err), file.Close())
+	if !info.IsDir() {
+		return fmt.Errorf("output %q must be a real directory", directory)
 	}
-	return &Lock{file: file}, nil
+	for _, name := range names {
+		path := filepath.Join(directory, name)
+		if _, err := os.Lstat(path); err == nil {
+			return OutputError(path, os.ErrExist)
+		} else if !os.IsNotExist(err) {
+			return OutputError(path, err)
+		}
+	}
+	return nil
 }
 
-func (l *Lock) Close() error {
-	return errors.Join(syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN), l.file.Close())
+func OutputError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if os.IsExist(err) {
+		return Tag(DataConflict, fmt.Errorf("output %q already exists (earlier output, incomplete work, or unsupported concurrent writer); use one preparer per output location; reuse a successful artifact downstream, explicitly clean conflicting items, or choose another location: %w", name, err))
+	}
+	return fmt.Errorf("output %q: %w", name, err)
+}
+
+// Publish links a complete, synced temporary without replacing an existing result.
+func Publish(temporary, destination string) error {
+	if err := os.Link(temporary, destination); err != nil {
+		return OutputError(destination, err)
+	}
+	if err := SyncDir(filepath.Dir(destination)); err != nil {
+		return OutputError(destination, errors.Join(err, os.Remove(destination)))
+	}
+	if err := os.Remove(temporary); err != nil {
+		log.Printf("published %q; temporary cleanup %q failed: %v", destination, temporary, err)
+	}
+	return nil
 }
 
 func SyncDir(directory string) error {
@@ -62,9 +85,9 @@ func SyncDir(directory string) error {
 func WriteFile(name string, data []byte) (err error) {
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
 	if err != nil {
-		return err
+		return OutputError(name, err)
 	}
-	defer func() { err = errors.Join(err, f.Close()) }()
+	defer func() { err = OutputError(name, errors.Join(err, f.Close())) }()
 	if _, err = f.Write(data); err != nil {
 		return err
 	}
@@ -79,20 +102,6 @@ func RequireSpace(directory string, bytes uint64) error {
 	available := info.Bavail * uint64(info.Bsize)
 	if bytes > available {
 		return fmt.Errorf("insufficient free space at %s: need %d bytes, available %d", directory, bytes, available)
-	}
-	return nil
-}
-
-// RequireEmpty excludes only this invocation's writer lock, never old results.
-func RequireEmpty(directory, lock string) error {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.Name() != lock {
-			return Tag(DataConflict, fmt.Errorf("output %q must be new or empty; found %q; choose another location or explicitly clean it", directory, entry.Name()))
-		}
 	}
 	return nil
 }

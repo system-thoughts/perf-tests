@@ -150,7 +150,14 @@ func TestIndependentDatasetContentAndConcurrency(t *testing.T) {
 }
 
 func TestExistingDatasetAndNamespaceRejected(t *testing.T) {
-	root, old := newPool(t, 2, 1)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: 2, BaseURL: "http://source.example", GenerationWorkers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := read(t, old.ManifestPath)
 	for _, count := range []uint64{1, 2, 3} {
 		if _, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: count, BaseURL: "http://source.example", GenerationWorkers: 1}); contract.ErrorCode(err) != contract.DataConflict {
@@ -179,7 +186,6 @@ func TestExistingDatasetAndNamespaceRejected(t *testing.T) {
 
 func TestObjectConflictDoesNotOverwrite(t *testing.T) {
 	root := t.TempDir()
-	state := t.TempDir()
 	directory := filepath.Join(root, "objects/sha256")
 	if err := os.MkdirAll(directory, 0755); err != nil {
 		t.Fatal(err)
@@ -188,7 +194,7 @@ func TestObjectConflictDoesNotOverwrite(t *testing.T) {
 	if err := os.WriteFile(name, []byte("sentinel"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeObject(context.Background(), root, state, 0, 64, "http://source.example"); contract.ErrorCode(err) != contract.DataConflict {
+	if _, err := writeObject(context.Background(), root, 0, 64, "http://source.example"); contract.ErrorCode(err) != contract.DataConflict {
 		t.Fatalf("object conflict: %v", err)
 	}
 	if string(read(t, name)) != "sentinel" {
@@ -205,7 +211,7 @@ func TestInterruptedNewDatasetAndExplicitCleanup(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || result.ManifestPath != "" {
 		t.Fatalf("interrupted publication: %+v %v", result, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".fixed-pool-incomplete/failed.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "objects")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Prepare(context.Background(), spec); contract.ErrorCode(err) != contract.DataConflict {

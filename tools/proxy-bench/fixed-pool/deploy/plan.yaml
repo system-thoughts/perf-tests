@@ -1,5 +1,5 @@
 # Place the chosen manifest on this PVC first. Paths are examples, not an enforced workspace.
-# Plan generation needs neither the source server nor the Seed. Select a new/empty --out.
+# Plan generation needs neither the source server nor the Seed. Use one preparer per location; owned output paths must not exist.
 apiVersion: batch/v1
 kind: Job
 metadata:

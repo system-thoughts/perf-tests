@@ -95,34 +95,17 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 	if err != nil {
 		return result, err
 	}
-	lock, err := contract.AcquireLock(directory, ".proxy-bench-plan.lock")
-	if err != nil {
+	if err := contract.PrepareOutput(directory, "shards", "request-plan.json", ".request-plan.json.tmp"); err != nil {
 		return result, err
 	}
-	defer func() { err = errors.Join(err, lock.Close()) }()
-	if err := contract.RequireEmpty(directory, ".proxy-bench-plan.lock"); err != nil {
-		return result, err
-	}
-	manifestSHA := contract.Digest(manifestData)
-	temporary := filepath.Join(directory, ".incomplete")
 	if err := contract.RequireSpace(directory, result.Estimates.FileBytes); err != nil {
 		return result, err
 	}
-	if err := os.Mkdir(temporary, 0700); err != nil {
-		return result, err
+	if err := os.Mkdir(filepath.Join(directory, "shards"), 0755); err != nil {
+		return result, contract.OutputError(filepath.Join(directory, "shards"), err)
 	}
-	if err := os.Mkdir(filepath.Join(temporary, "shards"), 0755); err != nil {
-		return result, err
-	}
-	defer func() {
-		if err != nil {
-			if _, statErr := os.Lstat(temporary); statErr == nil {
-				err = fmt.Errorf("%w; unfinished plan retained at %s", err, temporary)
-			} else {
-				err = fmt.Errorf("%w; inspect publication at %s", err, directory)
-			}
-		}
-	}()
+	manifestSHA := contract.Digest(manifestData)
+	temporary := filepath.Join(directory, ".request-plan.json.tmp")
 	p := contract.Plan{SchemaVersion: 1, ManifestSHA256: manifestSHA, RangeBytes: spec.RangeBytes, RegionsPerObject: perObject, RegionCount: total, Algorithm: contract.OrderAlgorithm, Seed: contract.OrderSeed, WorkerCount: spec.Workers, Shards: make([]contract.Shard, int(spec.Workers))}
 	values, err := permutation(ctx, total)
 	if err != nil {
@@ -133,7 +116,7 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 			return result, err
 		}
 		path := "shards/" + strconv.FormatUint(worker, 10) + ".json"
-		digest, err := writeShard(ctx, filepath.Join(temporary, filepath.FromSlash(path)), values, worker, spec.Workers)
+		digest, err := writeShard(ctx, filepath.Join(directory, filepath.FromSlash(path)), values, worker, spec.Workers)
 		if err != nil {
 			return result, err
 		}
@@ -143,10 +126,10 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 	if err != nil {
 		return result, err
 	}
-	if err := contract.WriteFile(filepath.Join(temporary, "request-plan.json"), data); err != nil {
+	if err := contract.WriteFile(temporary, data); err != nil {
 		return result, err
 	}
-	_, _, actual, err := load(ctx, filepath.Join(temporary, "request-plan.json"), manifest, manifestSHA, values)
+	_, _, actual, err := load(ctx, temporary, manifest, manifestSHA, values)
 	if err != nil {
 		return result, err
 	}
@@ -154,7 +137,7 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if err := publish(temporary, directory, actual, spec.FileBudget); err != nil {
+	if err := publish(directory, actual, spec.FileBudget); err != nil {
 		return result, err
 	}
 	result.Path, result.SHA256, result.ActualFileBytes = filepath.Join(directory, "request-plan.json"), contract.Digest(data), actual
@@ -162,35 +145,20 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 }
 
 // Publish the descriptor last: interrupted shard publication is not consumable.
-func publish(temporary, directory string, actual, budget uint64) error {
+func publish(directory string, actual, budget uint64) error {
 	if budget != 0 && actual > budget {
 		return contract.Tag(contract.BudgetExceeded, fmt.Errorf("actual plan files %d exceed file-budget %d", actual, budget))
 	}
-	if err := contract.SyncDir(filepath.Join(temporary, "shards")); err != nil {
+	if err := contract.SyncDir(filepath.Join(directory, "shards")); err != nil {
 		return err
 	}
-	if err := os.Rename(filepath.Join(temporary, "shards"), filepath.Join(directory, "shards")); err != nil {
-		return err
-	}
-	if err := contract.SyncDir(directory); err != nil {
-		return err
-	}
-	if err := os.Link(filepath.Join(temporary, "request-plan.json"), filepath.Join(directory, "request-plan.json")); err != nil {
-		return err
-	}
-	if err := contract.SyncDir(directory); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(temporary); err != nil {
-		return err
-	}
-	return contract.SyncDir(directory)
+	return contract.Publish(filepath.Join(directory, ".request-plan.json.tmp"), filepath.Join(directory, "request-plan.json"))
 }
 
 func writeShard(ctx context.Context, name string, values []uint32, worker, workers uint64) (digest string, err error) {
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
 	if err != nil {
-		return "", err
+		return "", contract.OutputError(name, err)
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
 	hash := sha256.New()

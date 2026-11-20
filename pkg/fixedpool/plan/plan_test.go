@@ -229,36 +229,24 @@ func TestPreflightAndActualBudgets(t *testing.T) {
 			}
 		})
 	}
-	// Exercise the real postflight publication gate with measured bytes. The
-	// production preflight is conservative, so a tiny valid plan normally fails
-	// an undersized budget before reaching this independent gate.
-	temporary := filepath.Join(t.TempDir(), "staging")
-	if err := os.MkdirAll(filepath.Join(temporary, "shards"), 0755); err != nil {
+	// Measured-byte protection is separate from the conservative preflight.
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "shards"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	content := []byte("[0,1,2]\n")
-	if err := os.WriteFile(filepath.Join(temporary, "shards/0.json"), content, 0600); err != nil {
+	if err := contract.WriteFile(filepath.Join(directory, "shards/0.json"), []byte("[0,1,2]\n")); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Join(temporary, "shards/0.json"))
-	if err != nil {
+	if err := contract.WriteFile(filepath.Join(directory, ".request-plan.json.tmp"), []byte("{}\n")); err != nil {
 		t.Fatal(err)
 	}
-	actual := uint64(info.Size())
-	final := temporary + "-published"
-	if err := publish(temporary, final, actual, actual-1); err == nil {
-		t.Fatal("postflight accepted actual size above budget")
+	if err := publish(directory, 10, 9); err == nil {
+		t.Fatal("postflight accepted bytes above budget")
 	}
-	if _, err := os.Stat(final); !os.IsNotExist(err) {
-		t.Fatal("postflight published an over-budget plan")
+	if _, err := os.Stat(filepath.Join(directory, "request-plan.json")); !os.IsNotExist(err) {
+		t.Fatal("over-budget plan was published")
 	}
-	if err := os.Mkdir(final, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(temporary, "request-plan.json"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := publish(temporary, final, actual, actual); err != nil {
+	if err := publish(directory, 10, 10); err != nil {
 		t.Fatal(err)
 	}
 }

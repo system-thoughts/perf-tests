@@ -39,7 +39,6 @@ type Environment struct {
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-var decimal = regexp.MustCompile(`^[0-9]+$`)
 
 func ReadEnvironment(environ []string) (e Environment, err error) {
 	values := map[string]string{}
@@ -71,8 +70,8 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 			return fallback
 		}
 		n, parseErr := strconv.ParseUint(raw, 10, 64)
-		if !decimal.MatchString(raw) || parseErr != nil || n < minValue || n > maxValue {
-			err = fmt.Errorf("%s must be a decimal integer in [%d,%d]", key, minValue, maxValue)
+		if parseErr != nil || n < minValue || n > maxValue {
+			err = fmt.Errorf("%s: expected a decimal integer in [%d,%d], actual %q", key, minValue, maxValue, raw)
 		}
 		return n
 	}

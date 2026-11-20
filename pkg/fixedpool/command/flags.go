@@ -18,21 +18,12 @@ package command
 
 import (
 	"flag"
-	"fmt"
 	"strconv"
 )
 
 func DecimalFlag(flags *flag.FlagSet, value *uint64, name string, initial uint64, description string) {
 	*value = initial
 	flags.Func(name, description, func(text string) error {
-		if text == "" {
-			return fmt.Errorf("%s requires a decimal integer", name)
-		}
-		for _, c := range text {
-			if c < '0' || c > '9' {
-				return fmt.Errorf("%s requires a decimal integer", name)
-			}
-		}
 		n, err := strconv.ParseUint(text, 10, 64)
 		if err != nil {
 			return err

@@ -4,15 +4,14 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: fixed-pool-plan
-  namespace: benchmark
 spec:
   backoffLimit: 0
   template:
     spec:
+      # Optional placement must respect the metadata PVC topology.
+      # nodeSelector: {kubernetes.io/hostname: chosen-node}
       restartPolicy: Never
       automountServiceAccountToken: false
-      nodeSelector:
-        kubernetes.io/hostname: load-node
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -31,9 +30,9 @@ spec:
         - --manifest
         - /inputs/dataset-manifest.json
         - --range
-        - '65536'
+        - '65536' # R: bytes per complete region; any 0 < R <= B.
         - --workers
-        - '1'
+        - '1' # W: independent workers; produce a new plan when R/W changes.
         - --out
         - /inputs/plan
         securityContext:

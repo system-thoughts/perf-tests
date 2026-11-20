@@ -1,7 +1,8 @@
+# Role names require reachable DNS from the Seed/preparer; replace them for your network.
 schema_version: 1
 source:
-  base_url: http://fixed-pool-source.benchmark.svc.cluster.local
+  base_url: http://fixed-pool-source
 target:
   ref: seed-one
-  proxy: http://192.0.2.10:4001
-  expected_server_ip: 192.0.2.10
+  proxy: http://seed-client:4001
+  expected_server_ip: 192.0.2.10 # Actual daemon response IP; replace this example.

@@ -4,14 +4,13 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: fixed-pool-worker
-  namespace: benchmark
 spec:
   backoffLimit: 0
   template:
     spec:
+      # For measured runs, choose the calibrated load node and respect PVC topology.
+      # nodeSelector: {kubernetes.io/hostname: chosen-node}
       restartPolicy: Never
-      nodeSelector:
-        kubernetes.io/hostname: load-node
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -44,6 +43,7 @@ spec:
           mountPath: /tmp
         imagePullPolicy: IfNotPresent
         env:
+        # Mode and input paths are wiring; choose load settings and resources below.
         - name: MODE
           value: fixed-pool
         - name: MANIFEST
@@ -52,6 +52,7 @@ spec:
           value: /inputs/plan/request-plan.json
         - name: TARGET_PREPARATION
           value: /inputs/preparation/target-preparation.json
+        # RATE is total across W workers; each worker uses its distinct WORKER_ID.
         - name: RATE
           value: '10'
         - name: DURATION

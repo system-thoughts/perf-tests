@@ -1,32 +1,31 @@
-# Edit the target here; workers consume the successful preparation record. 192.0.2.10 is a documentation address.
+# Edit source/target here; workers consume the successful preparation record.
+# These role names must resolve from the actual callers; use a reachable FQDN/IP/NodePort otherwise.
 # This Job is independent of plan.yaml. Use one preparer per output location; existing records are not replaced; the command does not clear Seed cache.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: fixed-pool-target
-  namespace: benchmark
 data:
   target-config.yaml: |
     schema_version: 1
     source:
-      base_url: http://fixed-pool-source.benchmark.svc.cluster.local
+      base_url: http://fixed-pool-source
     target:
-      proxy: http://192.0.2.10:4001
-      expected_server_ip: 192.0.2.10
+      proxy: http://seed-client:4001
+      expected_server_ip: 192.0.2.10 # Actual daemon response IP, not proxy DNS/Service IP; replace this example.
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: fixed-pool-seed
-  namespace: benchmark
 spec:
   backoffLimit: 0
   template:
     spec:
+      # Optional placement must respect the metadata PVC topology.
+      # nodeSelector: {kubernetes.io/hostname: chosen-node}
       restartPolicy: Never
       automountServiceAccountToken: false
-      nodeSelector:
-        kubernetes.io/hostname: load-node
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

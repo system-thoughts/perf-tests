@@ -4,15 +4,14 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: fixed-pool-data
-  namespace: benchmark
 spec:
   backoffLimit: 0
   template:
     spec:
+      # Optional placement must respect the source PVC topology.
+      # nodeSelector: {kubernetes.io/hostname: chosen-node}
       restartPolicy: Never
       automountServiceAccountToken: false
-      nodeSelector:
-        kubernetes.io/hostname: source-node
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -31,9 +30,9 @@ spec:
         - --root
         - /data/dataset
         - --size
-        - '4194304'
+        - '4194304' # B: bytes per object.
         - --count
-        - '2'
+        - '2' # N: number of objects.
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

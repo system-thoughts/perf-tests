@@ -4,20 +4,20 @@ apiVersion: v1
 kind: Service
 metadata:
   name: fixed-pool-source
-  namespace: benchmark
 spec:
+  type: ClusterIP # Use NodePort when the Seed cannot reach the cluster Service.
   selector:
     app.kubernetes.io/name: fixed-pool-source
   ports:
   - name: http
     port: 80
     targetPort: 80
+    nodePort: 0 # For NodePort: 0 allocates a port; or choose a free valid port. Keep 0 for ClusterIP.
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: fixed-pool-source
-  namespace: benchmark
 spec:
   replicas: 1
   serviceName: fixed-pool-source
@@ -29,10 +29,11 @@ spec:
       labels:
         app.kubernetes.io/name: fixed-pool-source
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: source-node
+      # Optional placement must respect the source PVC topology.
+      # nodeSelector: {kubernetes.io/hostname: chosen-node}
       securityContext:
         fsGroup: 1000
+      # Keep selectors, ports and the object mount aligned; adapt storage/resources.
       containers:
       - name: file-server
         image: docker.io/dragonflyoss/file-server@sha256:2ba1179ee4c2634284311cba657b3981482e2061109a8bc1e53597b70a1199d9

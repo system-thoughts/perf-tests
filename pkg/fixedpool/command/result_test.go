@@ -26,18 +26,23 @@ import (
 
 func TestExitClassificationAndInterruptionPriority(t *testing.T) {
 	for _, c := range []string{contract.InputInvalid, contract.ContractMismatch, contract.BudgetExceeded, contract.DataConflict} {
-		issues, code := Issues(context.Background(), "plan", contract.Tag(c, errors.New("reason")))
-		if code != 2 || len(issues) != 1 || issues[0].Code != c || issues[0].Stage != "plan" {
-			t.Fatal(issues, code)
+		if code := ExitCode(context.Background(), contract.Tag(c, errors.New("reason"))); code != 2 {
+			t.Fatal(c, code)
 		}
 	}
-	if _, code := Issues(context.Background(), "dataset", errors.New("I/O failure")); code != 3 {
+	for _, err := range []error{errors.New("I/O failure"), contract.Tag("TARGET_UNSUPPORTED", errors.New("unsupported"))} {
+		if code := ExitCode(context.Background(), err); code != 3 {
+			t.Fatal(code)
+		}
+	}
+	if code := ExitCode(context.Background(), nil); code != 0 {
 		t.Fatal(code)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	issues, code := Issues(ctx, "dataset", contract.Tag(contract.InputInvalid, errors.New("invalid")))
-	if code != 130 || len(issues) != 2 {
-		t.Fatal("interrupt lost priority or other error", issues, code)
+	for _, err := range []error{nil, errors.New("failure"), contract.Tag(contract.InputInvalid, errors.New("invalid"))} {
+		if code := ExitCode(ctx, err); code != 130 {
+			t.Fatal("interrupt lost priority", code)
+		}
 	}
 }

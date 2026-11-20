@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/command"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/worker"
 )
@@ -43,16 +44,9 @@ func inputError(ctx context.Context, stdout io.Writer, err error) int {
 		code = "WORKER_FAILED"
 	}
 	_ = worker.Emit(stdout, "ERROR", []worker.Issue{{Code: code, Stage: "input", Message: err.Error()}})
-	if ctx.Err() != nil {
-		return 130
-	}
-	switch code {
-	case contract.InputInvalid, contract.ContractMismatch, contract.BudgetExceeded, contract.DataConflict:
-		return 2
-	default:
-		return 3
-	}
+	return command.ExitCode(ctx, err)
 }
+
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("proxy-bench-worker-support", flag.ContinueOnError)
 	flags.SetOutput(stderr)

@@ -55,39 +55,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runSeed(ctx, args[1:], stdout, stderr)
 	default:
 		err := contract.Tag(contract.InputInvalid, fmt.Errorf("unknown preparation action %q; use data, plan or seed-cache", args[0]))
-		issues, code := command.Issues(ctx, "prepare", err)
-		diagnostic(stderr, "prepare", err)
-		return command.Output(stdout, stderr, struct {
-			Errors []command.Issue `json:"errors"`
-		}{issues}, code)
+		return finish(ctx, stderr, "prepare", err)
 	}
 }
 
-func diagnostic(w io.Writer, action string, err error) {
+func finish(ctx context.Context, stderr io.Writer, action string, err error) int {
 	if err != nil {
-		_, _ = fmt.Fprintf(w, "%s: %v\n", action, err)
+		_, _ = fmt.Fprintf(stderr, "%s: %s: %v\n", action, contract.ErrorCode(err), err)
 	}
-}
-
-type dataReport struct {
-	SchemaVersion    int               `json:"schema_version"`
-	Manifest         *contract.FileRef `json:"manifest"`
-	GeneratedObjects uint64            `json:"generated_objects"`
-	GeneratedBytes   uint64            `json:"generated_bytes"`
-	ElapsedMS        int64             `json:"elapsed_ms"`
-	Errors           []command.Issue   `json:"errors"`
+	return command.ExitCode(ctx, err)
 }
 
 func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	started := time.Now()
-	r := dataReport{SchemaVersion: 1}
-	finish := func(err error) int {
-		issues, code := command.Issues(ctx, "dataset", err)
-		r.Errors = issues
-		r.ElapsedMS = time.Since(started).Milliseconds()
-		diagnostic(stderr, "data", err)
-		return command.Output(stdout, stderr, r, code)
-	}
 	flags := flag.NewFlagSet("proxy-bench-prepare data", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var spec dataset.Spec
@@ -101,49 +81,30 @@ func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		return finish(contract.Tag(contract.InputInvalid, err))
+		return finish(ctx, stderr, "data", contract.Tag(contract.InputInvalid, err))
 	}
 	if flags.NArg() != 0 || generationWorkers == 0 || generationWorkers > uint64(^uint(0)>>1) {
-		return finish(contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected arguments or invalid generation-workers")))
+		return finish(ctx, stderr, "data", contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected arguments or invalid generation-workers")))
 	}
 	spec.GenerationWorkers = int(generationWorkers)
 	if _, err := fmt.Fprintln(stderr, "Preparing a new fixed dataset."); err != nil {
-		return finish(err)
+		return finish(ctx, stderr, "data", err)
 	}
 	result, err := dataset.Prepare(ctx, spec)
 	if err != nil {
 		err = contract.Input("DATA.root", spec.Root, err)
 	}
-	r.GeneratedObjects, r.GeneratedBytes = result.GeneratedObjects, result.GeneratedBytes
-	if err == nil {
-		r.Manifest = &contract.FileRef{Path: result.ManifestPath, SHA256: result.ManifestSHA256}
-		_, _ = fmt.Fprintf(stderr, "Data generated: B=%d N=%d source=%q manifest=%q sha256=%s\n", result.Manifest.ObjectSize, result.Manifest.ObjectCount, result.Manifest.BaseURL, result.ManifestPath, result.ManifestSHA256)
+	if _, writeErr := fmt.Fprintf(stdout, "Data generation: objects=%d bytes=%d elapsed_ms=%d\n", result.GeneratedObjects, result.GeneratedBytes, time.Since(started).Milliseconds()); err == nil {
+		err = writeErr
 	}
-	return finish(err)
-}
-
-type planReport struct {
-	SchemaVersion   int               `json:"schema_version"`
-	ManifestSHA256  *string           `json:"manifest_sha256"`
-	Plan            *contract.FileRef `json:"plan"`
-	RegionCount     *uint64           `json:"region_count"`
-	WorkerCount     *uint64           `json:"worker_count"`
-	Estimates       *plan.Estimates   `json:"estimates"`
-	ActualFileBytes *uint64           `json:"actual_file_bytes"`
-	ElapsedMS       int64             `json:"elapsed_ms"`
-	Errors          []command.Issue   `json:"errors"`
+	if err == nil {
+		_, err = fmt.Fprintf(stdout, "Data generated: B=%d N=%d source=%q manifest=%q sha256=%s\n", result.Manifest.ObjectSize, result.Manifest.ObjectCount, result.Manifest.BaseURL, result.ManifestPath, result.ManifestSHA256)
+	}
+	return finish(ctx, stderr, "data", err)
 }
 
 func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	started := time.Now()
-	r := planReport{SchemaVersion: 1}
-	finish := func(err error) int {
-		issues, code := command.Issues(ctx, "plan", err)
-		r.Errors = issues
-		r.ElapsedMS = time.Since(started).Milliseconds()
-		diagnostic(stderr, "plan", err)
-		return command.Output(stdout, stderr, r, code)
-	}
 	flags := flag.NewFlagSet("proxy-bench-prepare plan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var name string
@@ -158,10 +119,10 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		return finish(contract.Tag(contract.InputInvalid, err))
+		return finish(ctx, stderr, "plan", contract.Tag(contract.InputInvalid, err))
 	}
 	if flags.NArg() != 0 || name == "" || spec.Directory == "" {
-		return finish(contract.Tag(contract.InputInvalid, fmt.Errorf("manifest and out are required; no positional arguments")))
+		return finish(ctx, stderr, "plan", contract.Tag(contract.InputInvalid, fmt.Errorf("manifest and out are required; no positional arguments")))
 	}
 	var badBudget bool
 	flags.Visit(func(f *flag.Flag) {
@@ -170,38 +131,33 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	if badBudget {
-		return finish(contract.Tag(contract.InputInvalid, fmt.Errorf("explicit budgets must be positive bytes")))
-	}
-	if spec.Workers > 0 && spec.Workers <= contract.MaxRegions {
-		r.WorkerCount = &spec.Workers
+		return finish(ctx, stderr, "plan", contract.Tag(contract.InputInvalid, fmt.Errorf("explicit budgets must be positive bytes")))
 	}
 	data, err := os.ReadFile(name)
 	if err != nil {
-		return finish(contract.Tag(contract.InputInvalid, contract.Input("MANIFEST", name, err)))
+		return finish(ctx, stderr, "plan", contract.Tag(contract.InputInvalid, contract.Input("MANIFEST", name, err)))
 	}
 	digest := contract.Digest(data)
-	r.ManifestSHA256 = &digest
 	if _, err := fmt.Fprintln(stderr, "Preparing access plan from the manifest only."); err != nil {
-		return finish(err)
+		return finish(ctx, stderr, "plan", err)
 	}
 	result, err := plan.Prepare(ctx, data, spec)
 	if err != nil {
 		err = fmt.Errorf("MANIFEST %q OUT %q: %w", name, spec.Directory, err)
 	}
-	if result.RegionCount != 0 {
-		r.RegionCount = &result.RegionCount
-	}
 	if result.Estimates.MemoryBytes != 0 {
-		r.Estimates = &result.Estimates
-	}
-	if result.ActualFileBytes != 0 {
-		r.ActualFileBytes = &result.ActualFileBytes
+		actual := "n/a"
+		if result.ActualFileBytes != 0 {
+			actual = fmt.Sprint(result.ActualFileBytes)
+		}
+		if _, writeErr := fmt.Fprintf(stdout, "Plan resources: estimated_memory_bytes=%d estimated_file_bytes=%d actual_file_bytes=%s elapsed_ms=%d\n", result.Estimates.MemoryBytes, result.Estimates.FileBytes, actual, time.Since(started).Milliseconds()); err == nil {
+			err = writeErr
+		}
 	}
 	if err == nil {
-		r.Plan = &contract.FileRef{Path: result.Path, SHA256: result.SHA256}
-		_, _ = fmt.Fprintf(stderr, "Plan generated: MANIFEST=%q sha256=%s B=%d N=%d R=%d W=%d regions=%d PLAN=%q sha256=%s\n", name, digest, result.ObjectSize, result.ObjectCount, spec.RangeBytes, spec.Workers, result.RegionCount, result.Path, result.SHA256)
+		_, err = fmt.Fprintf(stdout, "Plan generated: MANIFEST=%q sha256=%s B=%d N=%d R=%d W=%d regions=%d PLAN=%q sha256=%s\n", name, digest, result.ObjectSize, result.ObjectCount, spec.RangeBytes, spec.Workers, result.RegionCount, result.Path, result.SHA256)
 	}
-	return finish(err)
+	return finish(ctx, stderr, "plan", err)
 }
 
 func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -228,15 +184,12 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		result, err = target.Prepare(ctx, spec)
 	}
-	_, code := command.Issues(ctx, "target_prepare", err)
+	code := command.ExitCode(ctx, err)
 	if err != nil {
-		diagnostic(stderr, "seed-cache", fmt.Errorf("MANIFEST %q TARGET_CONFIG %q OUT %q: %w", spec.Manifest, spec.TargetConfig, spec.Out, err))
+		finish(ctx, stderr, "seed-cache", fmt.Errorf("MANIFEST %q TARGET_CONFIG %q OUT %q: %w", spec.Manifest, spec.TargetConfig, spec.Out, err))
 		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target; reuse a valid success record downstream, or explicitly clean conflicting output items or select another --out. This command does not clear the Seed cache.\n")
 		return code
 	}
 	_, err = fmt.Fprintf(stdout, "Seed prepared: MANIFEST=%q sha256=%s objects=%d target=%s expected_server_ip=%s record=%q\n", spec.Manifest, result.ManifestSHA256, result.ObjectCount, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out+"/target-preparation.json")
-	if err != nil {
-		return 3
-	}
-	return 0
+	return finish(ctx, stderr, "seed-cache", err)
 }

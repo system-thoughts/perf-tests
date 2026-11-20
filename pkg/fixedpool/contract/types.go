@@ -51,11 +51,6 @@ type Manifest struct {
 	Objects       []Object  `json:"objects"`
 }
 
-type FileRef struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-}
-
 type Shard struct {
 	WorkerID    uint64 `json:"worker_id"`
 	RegionCount uint64 `json:"region_count"`

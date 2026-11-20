@@ -46,15 +46,6 @@ func TestInputErrorClassification(t *testing.T) {
 	if got := inputError(context.Background(), brokenWriter{}, err); got != 2 {
 		t.Fatal(got)
 	}
-	unsupported := contract.Tag("TARGET_UNSUPPORTED", errors.New("unsupported proxy rules"))
-	if got := inputError(context.Background(), io.Discard, unsupported); got != 3 {
-		t.Fatalf("unsupported target must preserve operational exit 3, got %d", got)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if got := inputError(ctx, brokenWriter{}, err); got != 130 {
-		t.Fatal(got)
-	}
 	var out strings.Builder
 	if got := inputError(context.Background(), &out, errors.New("publication failed")); got != 3 || !strings.Contains(out.String(), "WORKER_FAILED") || strings.Contains(out.String(), "PREPARE_FAILED") {
 		t.Fatalf("code=%d output=%s", got, out.String())

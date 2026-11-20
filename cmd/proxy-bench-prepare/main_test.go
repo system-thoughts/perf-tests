@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,46 +28,35 @@ import (
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/dataset"
 )
 
-func invokeData(t *testing.T, args []string) (int, dataReport) {
+func invoke(t *testing.T, action string, args []string) (int, string, string) {
 	t.Helper()
-	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), append([]string{"data"}, args...), &stdout, &stderr)
-	var result dataReport
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not one report: %q; stderr=%s", stdout.String(), stderr.String())
-	}
-	return code, result
+	var out, log bytes.Buffer
+	code := run(context.Background(), append([]string{action}, args...), &out, &log)
+	return code, out.String(), log.String()
 }
 func TestDatasetOnlyCLI(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "source")
 	args := []string{"--size", "64", "--count", "2", "--root", root, "--base-url", "http://source.example"}
-	code, r := invokeData(t, args)
-	if code != 0 || r.Manifest == nil || r.GeneratedObjects != 2 || r.GeneratedBytes != 128 || len(r.Errors) != 0 {
-		t.Fatalf("new dataset: %+v code=%d", r, code)
+	code, out, log := invoke(t, "data", args)
+	if code != 0 || !strings.Contains(out, "objects=2 bytes=128") {
+		t.Fatalf("%d %s %s", code, out, log)
 	}
-	code, r = invokeData(t, args)
-	if code != 2 || r.Manifest != nil || r.Errors[0].Code != contract.DataConflict {
-		t.Fatalf("overwrote source: %+v code=%d", r, code)
+	manifest, _, err := contract.ReadManifest(filepath.Join(root, "dataset-manifest.json"))
+	if err != nil || manifest.ObjectCount != 2 || manifest.ObjectSize != 64 {
+		t.Fatalf("%+v %v", manifest, err)
+	}
+	code, _, log = invoke(t, "data", args)
+	if code != 2 || !strings.Contains(log, contract.DataConflict) {
+		t.Fatalf("%d %s", code, log)
 	}
 }
 func TestRejectedOldAndInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{{"--range", "16"}, {"--count", "1.5"}, {"--count", "-1"}, {"--size", "0x40"}, {"extra"}, {"--generation-workers", "0"}} {
-		code, r := invokeData(t, args)
-		if code != 2 || r.Manifest != nil || len(r.Errors) == 0 || r.Errors[0].Code != contract.InputInvalid {
-			t.Fatalf("arguments %v: %+v code=%d", args, r, code)
+		code, _, log := invoke(t, "data", args)
+		if code != 2 || !strings.Contains(log, contract.InputInvalid) {
+			t.Fatalf("%v code=%d %s", args, code, log)
 		}
 	}
-}
-
-func invokePlan(t *testing.T, args []string) (int, planReport) {
-	t.Helper()
-	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), append([]string{"plan"}, args...), &stdout, &stderr)
-	var result planReport
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not one report: %q; stderr=%s", stdout.String(), stderr.String())
-	}
-	return code, result
 }
 func TestIndependentPlanAndRetry(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "source")
@@ -88,34 +76,42 @@ func TestIndependentPlanAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := filepath.Join(t.TempDir(), "plans")
-	code, bad := invokePlan(t, []string{"--manifest", input, "--range", "3", "--out", plans})
-	if code != 2 || bad.Plan != nil || bad.RegionCount != nil || bad.Estimates != nil || bad.ManifestSHA256 == nil {
-		t.Fatalf("failure: %+v code=%d", bad, code)
+	code, _, log := invoke(t, "plan", []string{"--manifest", input, "--range", "3", "--out", plans})
+	if code != 2 || !strings.Contains(log, contract.InputInvalid) || !strings.Contains(log, input) {
+		t.Fatalf("%d %s", code, log)
 	}
 	args := []string{"--manifest", input, "--range", "16", "--workers", "3", "--out", plans}
-	code, good := invokePlan(t, args)
-	if code != 0 || good.Plan == nil || good.RegionCount == nil || *good.RegionCount != 8 {
-		t.Fatalf("plan without body: %+v code=%d", good, code)
+	code, out, log := invoke(t, "plan", args)
+	if code != 0 || !strings.Contains(out, "regions=8") {
+		t.Fatalf("%d %s %s", code, out, log)
 	}
-	code, conflict := invokePlan(t, args)
-	if code != 2 || conflict.Plan != nil || conflict.Errors[0].Code != contract.DataConflict {
-		t.Fatalf("existing output accepted: %+v code=%d", conflict, code)
+	raw, err := os.ReadFile(filepath.Join(plans, "request-plan.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	code, budget := invokePlan(t, append(args, "--file-budget", "1"))
-	if code != 2 || budget.Plan != nil || budget.Errors[0].Code != contract.BudgetExceeded || budget.Estimates == nil || budget.ActualFileBytes != nil {
-		t.Fatalf("budget report: %+v code=%d", budget, code)
+	var plan contract.Plan
+	if err := contract.DecodeRecord(raw, &plan); err != nil || plan.RegionCount != 8 || plan.WorkerCount != 3 {
+		t.Fatalf("%+v %v", plan, err)
+	}
+	code, _, log = invoke(t, "plan", args)
+	if code != 2 || !strings.Contains(log, contract.DataConflict) {
+		t.Fatalf("%d %s", code, log)
+	}
+	code, out, log = invoke(t, "plan", append(args, "--file-budget", "1"))
+	if code != 2 || !strings.Contains(log, contract.BudgetExceeded) || !strings.Contains(out, "estimated_file_bytes=") {
+		t.Fatalf("%d %s %s", code, out, log)
 	}
 }
 func TestPlanRejectsDatasetArguments(t *testing.T) {
 	for _, args := range [][]string{{"--size", "64"}, {"extra"}} {
-		code, r := invokePlan(t, args)
-		if code != 2 || r.Plan != nil || r.ManifestSHA256 != nil || len(r.Errors) == 0 {
-			t.Fatalf("arguments %v: %+v code=%d", args, r, code)
+		code, _, log := invoke(t, "plan", args)
+		if code != 2 || !strings.Contains(log, contract.InputInvalid) {
+			t.Fatalf("%v %d %s", args, code, log)
 		}
 	}
 }
 
-func TestArgumentFailuresAreStructuredAndDoNotPrepare(t *testing.T) {
+func TestArgumentFailuresDoNotPrepare(t *testing.T) {
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "missing-manifest.json")
 	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--concurrency", "0"}, {"--manifest", manifest, "--target-config", filepath.Join(dir, "target.yaml"), "--out", filepath.Join(dir, "preparation")}} {

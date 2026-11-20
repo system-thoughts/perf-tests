@@ -18,45 +18,21 @@ package command
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 )
 
-type Issue struct {
-	Code    string `json:"code"`
-	Stage   string `json:"stage"`
-	Message string `json:"message"`
-}
-
-func Issues(ctx context.Context, stage string, err error) ([]Issue, int) {
-	issues := []Issue{}
-	code := 0
-	if err != nil {
-		category := contract.ErrorCode(err)
-		code = 3
-		switch category {
-		case contract.InputInvalid, contract.ContractMismatch, contract.BudgetExceeded, contract.DataConflict:
-			code = 2
-		}
-		issues = append(issues, Issue{Code: category, Stage: stage, Message: err.Error()})
-	}
+// ExitCode classifies shared preparation and worker-input failures.
+func ExitCode(ctx context.Context, err error) int {
 	if ctx.Err() != nil {
-		issues = append(issues, Issue{Code: "INTERRUPTED", Stage: stage, Message: ctx.Err().Error()})
-		code = 130
+		return 130
 	}
-	return issues, code
-}
-
-func Output(stdout, stderr io.Writer, result any, code int) int {
-	if err := json.NewEncoder(stdout).Encode(result); err != nil {
-		_, _ = fmt.Fprintf(stderr, "write result: %v\n", err)
-		if code == 130 {
-			return code
-		}
+	if err == nil {
+		return 0
+	}
+	switch contract.ErrorCode(err) {
+	case contract.InputInvalid, contract.ContractMismatch, contract.BudgetExceeded, contract.DataConflict:
+		return 2
+	default:
 		return 3
 	}
-	return code
 }

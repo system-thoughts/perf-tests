@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+case "${MODE:-repeat}" in
+  repeat|random|sequential)
+    exec k6 run /home/k6/proxy-bench.js "$@"
+    ;;
+  fixed-pool)
+    exec /bin/sh /home/k6/fixed-pool/run-benchmark.sh "$@"
+    ;;
+  *)
+    printf 'MODE: expected repeat, random, sequential or fixed-pool; actual %s\n' "$MODE" >&2
+    exit 2
+    ;;
+esac

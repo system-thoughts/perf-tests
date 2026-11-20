@@ -45,9 +45,6 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	for _, pair := range environ {
 		key, value, _ := strings.Cut(pair, "=")
 		values[key] = value
-		if key == "MODE" || key == "RANGE" || key == "TARGET_URL" || key == "FILE_SIZE" || key == "CHUNK_SIZE" || key == "STREAMS" || key == "URL_COUNT" || key == "SEED_CLIENT_CPUS" || key == "TAG" || key == "APPLICATION" || key == "CONTENT_ID" || key == "CONTENT_FOR_TASK_ID" || key == "PIECE_LENGTH" || key == "PREFETCH" || key == "HEADERS" || strings.HasPrefix(key, "PROXY_BENCH_") || strings.HasPrefix(key, "X_DRAGONFLY_") {
-			return e, fmt.Errorf("%s is not supported by fixed-pool", key)
-		}
 	}
 	for _, key := range []string{"MANIFEST", "PLAN", "TARGET_PREPARATION", "RATE"} {
 		if values[key] == "" {

@@ -42,7 +42,10 @@ export K6_NO_USAGE_REPORT
 started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 [ "$interrupted" -eq 0 ] || exit 130
 # Use native k6 option precedence; handleSummary records effective test options.
-k6 run --no-color "$SCRIPT_DIR/benchmark.js" &
+if [ -n "${RANGE:-}" ]; then
+  printf 'fixed-pool: RANGE is ignored; the actual Range size comes from PLAN (see startup inputs).\n' >&2
+fi
+k6 run --no-color "$SCRIPT_DIR/benchmark.js" "$@" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child

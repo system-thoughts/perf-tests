@@ -42,14 +42,14 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 	if e.RunID != "" || e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 {
 		t.Fatal(e)
 	}
-	for _, extra := range []string{"RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
+	for _, extra := range []string{"RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0"} {
 		t.Run(extra, func(t *testing.T) {
 			if _, err := ReadEnvironment(append(baseEnv(), extra)); err == nil {
 				t.Fatal("accepted invalid environment")
 			}
 		})
 	}
-	for _, extra := range []string{"RUN_ID=", "RUN_ID=custom-1", "K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
+	for _, extra := range []string{"MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x", "MODE=fixed-pool", "RUN_ID=", "RUN_ID=custom-1", "K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
 		if _, err := ReadEnvironment(append(baseEnv(), extra)); err != nil {
 			t.Fatalf("native k6 environment rejected: %v", err)
 		}

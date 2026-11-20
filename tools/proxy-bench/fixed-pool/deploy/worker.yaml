@@ -23,9 +23,6 @@ spec:
       containers:
       - name: worker
         image: ghcr.io/system-thoughts/perf-tests/proxy-bench:replace-with-build-tag
-        command:
-        - /bin/sh
-        - /home/k6/fixed-pool/run-benchmark.sh
         resources:
           requests:
             cpu: 100m
@@ -47,6 +44,8 @@ spec:
           mountPath: /tmp
         imagePullPolicy: IfNotPresent
         env:
+        - name: MODE
+          value: fixed-pool
         - name: MANIFEST
           value: /inputs/dataset-manifest.json
         - name: PLAN

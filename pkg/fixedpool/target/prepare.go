@@ -56,7 +56,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	if err != nil {
 		return result, err
 	}
-	c, _, err := ReadConfig(s.TargetConfig)
+	c, err := ReadConfig(s.TargetConfig)
 	if err != nil {
 		return result, err
 	}

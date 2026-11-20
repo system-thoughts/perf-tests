@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -354,7 +355,7 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
-func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
+func TestTargetConfigParsingAndAddresses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "target.yaml")
 	original := "schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
 	for _, test := range []struct {
@@ -362,33 +363,49 @@ func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 		valid     bool
 	}{
 		{"valid", original, true},
-		{"invalid-source", strings.ReplaceAll(original, "http://objects.test", "https://objects.test"), false},
+		{"valid-alias", strings.ReplaceAll(original, "base_url: http://objects.test", "base_url: &url http://objects.test") + "  ref: *url\n", true},
 		{"invalid-proxy", strings.ReplaceAll(original, "http://seed.test:4001", "abc"), false},
 		{"invalid-server", strings.ReplaceAll(original, "192.0.2.10", "bad"), false},
 		{"unknown", original + "prepare: {}\n", false},
+		{"duplicate", original + "schema_version: 1\n", false},
+		{"second-document", original + "---\n", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.raw), 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, digest, err := ReadConfig(path)
+			_, err := ReadConfig(path)
 			if (err == nil) != test.valid {
-				t.Fatal(err)
+				t.Fatalf("%s: %v", test.name, err)
 			}
-			if test.valid && digest != contract.Digest([]byte(test.raw)) {
-				t.Fatal("wrong config digest")
+			if err != nil && !strings.Contains(err.Error(), path) {
+				t.Fatal("missing config path", err)
 			}
 		})
 	}
-}
-
-func TestRemovedInstanceConfigurationRejected(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "target.yaml")
-	raw := "schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n  instance_ref: old\n"
-	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-		t.Fatal(err)
+	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://source.example:0", "http://source.example:65536"} {
+		t.Run("source-rejected-"+input, func(t *testing.T) {
+			raw := strings.ReplaceAll(original, "http://objects.test", input)
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), "source") {
+				t.Fatalf("accepted %q or missing source diagnostic: %v", input, err)
+			}
+		})
 	}
-	if _, _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "instance_ref") {
-		t.Fatalf("missing field/path diagnostic: %v", err)
+	for input, want := range map[string]string{"http://LOCALHOST.": "http://localhost.", "http://x.localhost": "http://x.localhost", "http://127.0.0.1": "http://127.0.0.1", "http://[::1]": "http://[::1]", "http://[::ffff:127.0.0.1]": "http://[::ffff:127.0.0.1]", "http://SOURCE.example:80/base/": "http://source.example/base", "http://source.example": "http://source.example", "http://[2001:db8::1]:8080/": "http://[2001:db8::1]:8080", "http://source.example/base%2Fname//v/": "http://source.example/base%2Fname//v"} {
+		t.Run("source-normalized-"+input, func(t *testing.T) {
+			raw := strings.ReplaceAll(original, "http://objects.test", input)
+			// Quote YAML metacharacters as ordinary users can do.
+			raw = strings.ReplaceAll(raw, "base_url: "+input, "base_url: "+strconv.Quote(input))
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := ReadConfig(path)
+			if err != nil || c.Source.BaseURL != want {
+				t.Fatalf("%q: %+v %v; want %s", input, c, err, want)
+			}
+		})
 	}
 }

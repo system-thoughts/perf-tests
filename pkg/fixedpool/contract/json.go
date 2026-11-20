@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 	"strings"
 )
 
@@ -46,36 +45,31 @@ func Encode(value any) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// Decode rejects ambiguity before typed decoding: duplicate keys, nulls, missing
-// fields (including zero-valued required fields), unknown fields and extra values.
-func Decode(data []byte, value any) error { return decode(data, value, false) }
-
-// DecodeRecord permits explicit unknown pointer values in preparation records.
-func DecodeRecord(data []byte, value any) error { return decode(data, value, true) }
-
-func decode(data []byte, value any, record bool) error {
+// Decode uses typed standard-library decoding. The token pass protects against
+// duplicate keys and case aliases; value checks belong to each artifact consumer.
+func Decode(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	decoder = json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := checkValue(decoder, record, "$"); err != nil {
+	if err := checkValue(decoder, "$"); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return fmt.Errorf("expected end of JSON, got %v", err)
 	}
-	decoder = json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	return requiredFields(data, reflect.TypeOf(value).Elem(), "$", record)
+	return nil
 }
 
-func checkValue(decoder *json.Decoder, nullable bool, location string) error {
+func checkValue(decoder *json.Decoder, location string) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
-	if token == nil && !nullable {
+	if token == nil && (strings.HasSuffix(location, ".object_id") || strings.HasSuffix(location, ".worker_id")) {
 		return fmt.Errorf("%s: null is not allowed", location)
 	}
 	delimiter, ok := token.(json.Delim)
@@ -94,14 +88,31 @@ func checkValue(decoder *json.Decoder, nullable bool, location string) error {
 			if !ok || seen[name] {
 				return fmt.Errorf("%s: duplicate or invalid JSON key %q", location, key)
 			}
+			// Tool-owned JSON fields are lowercase ASCII. encoding/json folds
+			// case (including Unicode aliases), while JavaScript reads exact keys.
+			if name != strings.ToLower(name) || strings.IndexFunc(name, func(c rune) bool { return c > 127 }) >= 0 {
+				return fmt.Errorf("%s: noncanonical JSON field %q", location, name)
+			}
 			seen[name] = true
-			if err := checkValue(decoder, nullable, location+"."+name); err != nil {
+			if err := checkValue(decoder, location+"."+name); err != nil {
 				return err
 			}
 		}
+		// Zero is a valid execution identity, so ordinary value validation cannot
+		// distinguish its presence. Other required values are checked by consumers.
+		field := ""
+		if strings.HasPrefix(location, "$.objects[") {
+			field = "object_id"
+		}
+		if strings.HasPrefix(location, "$.shards[") {
+			field = "worker_id"
+		}
+		if field != "" && !seen[field] {
+			return fmt.Errorf("%s.%s: required field missing", location, field)
+		}
 	case '[':
 		for index := 0; decoder.More(); index++ {
-			if err := checkValue(decoder, nullable, fmt.Sprintf("%s[%d]", location, index)); err != nil {
+			if err := checkValue(decoder, fmt.Sprintf("%s[%d]", location, index)); err != nil {
 				return err
 			}
 		}
@@ -110,60 +121,4 @@ func checkValue(decoder *json.Decoder, nullable bool, location string) error {
 	}
 	_, err = decoder.Token()
 	return err
-}
-
-func requiredFields(data []byte, typ reflect.Type, location string, record bool) error {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		if record && (typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Interface) {
-			return nil
-		}
-		return fmt.Errorf("%s: null is not allowed", location)
-	}
-	if typ.Kind() == reflect.Pointer {
-		return requiredFields(data, typ.Elem(), location, record)
-	}
-	switch typ.Kind() {
-	case reflect.Struct:
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(data, &fields); err != nil {
-			return err
-		}
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			tag := strings.Split(field.Tag.Get("json"), ",")
-			name := tag[0]
-			if name == "-" || !field.IsExported() {
-				continue
-			}
-			if name == "" {
-				name = field.Name
-			}
-			raw, ok := fields[name]
-			if !ok {
-				if len(tag) > 1 && tag[1] == "omitempty" {
-					continue
-				}
-				return fmt.Errorf("%s.%s: required field missing", location, name)
-			}
-			if err := requiredFields(raw, field.Type, location+"."+name, record); err != nil {
-				return err
-			}
-			delete(fields, name)
-		}
-		// encoding/json folds field names even with DisallowUnknownFields.
-		for name := range fields {
-			return fmt.Errorf("%s: unknown or case-aliased JSON field %q", location, name)
-		}
-	case reflect.Slice, reflect.Array:
-		var entries []json.RawMessage
-		if err := json.Unmarshal(data, &entries); err != nil {
-			return err
-		}
-		for i, entry := range entries {
-			if err := requiredFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i), record); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

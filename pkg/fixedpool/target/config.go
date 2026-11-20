@@ -18,7 +18,6 @@ package target
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -41,9 +40,9 @@ const (
 )
 
 type Target struct {
-	Ref              string `json:"ref,omitempty"`
-	Proxy            string `json:"proxy"`
-	ExpectedServerIP string `json:"expected_server_ip"`
+	Ref              string `json:"ref,omitempty" yaml:"ref,omitempty"`
+	Proxy            string `json:"proxy" yaml:"proxy"`
+	ExpectedServerIP string `json:"expected_server_ip" yaml:"expected_server_ip"`
 }
 
 type Options struct {
@@ -53,17 +52,17 @@ type Options struct {
 }
 
 type Source struct {
-	BaseURL string `json:"base_url"`
+	BaseURL string `json:"base_url" yaml:"base_url"`
 }
 
 type Config struct {
-	SchemaVersion int    `json:"schema_version"`
-	Target        Target `json:"target"`
-	Source        Source `json:"source"`
+	SchemaVersion int    `json:"schema_version" yaml:"schema_version"`
+	Target        Target `json:"target" yaml:"target"`
+	Source        Source `json:"source" yaml:"source"`
 }
 
-// ReadConfig validates and fingerprints the same file bytes.
-func ReadConfig(name string) (c Config, digest string, err error) {
+// ReadConfig decodes one target configuration and validates its addresses.
+func ReadConfig(name string) (c Config, err error) {
 	defer func() {
 		if err != nil {
 			err = contract.Input("TARGET_CONFIG", name, err)
@@ -71,40 +70,25 @@ func ReadConfig(name string) (c Config, digest string, err error) {
 	}()
 	raw, err := os.ReadFile(name)
 	if err != nil {
-		return c, "", contract.Tag(contract.InputInvalid, err)
+		return c, contract.Tag(contract.InputInvalid, err)
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
-	var node yaml.Node
-	if err := decoder.Decode(&node); err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&c); err != nil {
+		return c, contract.Tag(contract.ContractMismatch, err)
 	}
-	var extra yaml.Node
+	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
+		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
 	}
-	value, err := yamlValue(&node)
-	if err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
-	}
-	fields, ok := value.(map[string]any)
-	if !ok {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
-	}
-	data, err := json.Marshal(fields)
-	if err == nil {
-		err = contract.Decode(data, &c)
-	}
-	if err == nil {
-		err = validateConfig(c)
-	}
-	if err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, err)
+	if err := validateConfig(c); err != nil {
+		return c, contract.Tag(contract.ContractMismatch, err)
 	}
 	c.Source.BaseURL, err = contract.NormalizeBaseURL(c.Source.BaseURL)
 	if err != nil {
-		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("source.base_url: %w", err))
+		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("source.base_url: %w", err))
 	}
-	return c, contract.Digest(raw), nil
+	return c, nil
 }
 
 func validateConfig(c Config) error {
@@ -140,64 +124,4 @@ func (o Options) validate() error {
 		}
 	}
 	return nil
-}
-
-// Preserve scalar types and reject ambiguous YAML before applying the shared
-// strict JSON contract checks. YAML aliases and implicit nulls are not inputs.
-func yamlValue(n *yaml.Node) (any, error) {
-	switch n.Kind {
-	case yaml.DocumentNode:
-		if len(n.Content) != 1 {
-			return nil, fmt.Errorf("empty YAML document")
-		}
-		return yamlValue(n.Content[0])
-	case yaml.MappingNode:
-		result := map[string]any{}
-		for i := 0; i < len(n.Content); i += 2 {
-			key := n.Content[i]
-			if key.Tag != "!!str" {
-				return nil, fmt.Errorf("mapping keys must be strings")
-			}
-			if _, exists := result[key.Value]; exists {
-				return nil, fmt.Errorf("duplicate YAML key %q", key.Value)
-			}
-			value, err := yamlValue(n.Content[i+1])
-			if err != nil {
-				return nil, err
-			}
-			result[key.Value] = value
-		}
-		return result, nil
-	case yaml.SequenceNode:
-		result := []any{}
-		for _, child := range n.Content {
-			value, err := yamlValue(child)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, value)
-		}
-		return result, nil
-	case yaml.ScalarNode:
-		switch n.Tag {
-		case "!!str":
-			return n.Value, nil
-		case "!!bool":
-			if n.Value == "true" {
-				return true, nil
-			}
-			if n.Value == "false" {
-				return false, nil
-			}
-		case "!!int":
-			for _, c := range n.Value {
-				if c < '0' || c > '9' {
-					return nil, fmt.Errorf("require decimal nonnegative integers")
-				}
-			}
-			value, err := strconv.ParseUint(n.Value, 10, 64)
-			return value, err
-		}
-	}
-	return nil, fmt.Errorf("unsupported YAML value at line %d", n.Line)
 }

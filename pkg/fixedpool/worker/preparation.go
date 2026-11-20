@@ -26,7 +26,7 @@ import (
 // CheckPreparation consumes the selected success record, not live cache state.
 func CheckPreparation(raw []byte, manifestID string) (target.Result, error) {
 	var r target.Result
-	if err := contract.DecodeRecord(raw, &r); err != nil {
+	if err := contract.Decode(raw, &r); err != nil {
 		return r, err
 	}
 	if r.SchemaVersion != 1 || r.Status != target.StatusReady {

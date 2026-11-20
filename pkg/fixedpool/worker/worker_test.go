@@ -19,6 +19,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,7 +116,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var spec Spec
-	if err := contract.DecodeRecord(raw, &spec); err != nil {
+	if err := json.Unmarshal(raw, &spec); err != nil {
 		t.Fatal(err)
 	}
 	if spec.BaseURL != "http://origin.test" || spec.Manifest != manifestPath || spec.ManifestID != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
@@ -139,7 +140,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 func TestPreparationBindings(t *testing.T) {
 	manifestID := strings.Repeat("a", 64)
 	original := target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: target.Target{Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}, Source: target.Source{BaseURL: "http://origin.test"}, Status: target.StatusReady}
-	for _, field := range []string{"valid", "status", "manifest_sha256", "proxy", "source", "schema_version"} {
+	for _, field := range []string{"valid", "valid-null-observations", "status", "manifest_sha256", "proxy", "source", "schema_version"} {
 		t.Run(field, func(t *testing.T) {
 			value := original
 			switch field {
@@ -158,11 +159,14 @@ func TestPreparationBindings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if field == "valid-null-observations" {
+				raw = bytes.Replace(raw, []byte(`"schema_version":1`), []byte(`"started_at":null,"ended_at":null,"preparation_id":null,"prepare":null,"object_count":null,"schema_version":1`), 1)
+			}
 			actual, err := CheckPreparation(raw, manifestID)
-			if (err == nil) != (field == "valid") {
+			if (err == nil) != strings.HasPrefix(field, "valid") {
 				t.Fatalf("%+v %v", actual, err)
 			}
-			if field == "valid" && (actual.Target != original.Target || actual.Source != original.Source) {
+			if strings.HasPrefix(field, "valid") && (actual.Target != original.Target || actual.Source != original.Source) {
 				t.Fatal(actual)
 			}
 		})

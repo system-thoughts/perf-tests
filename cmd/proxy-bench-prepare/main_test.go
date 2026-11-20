@@ -82,7 +82,7 @@ func TestIndependentPlanAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plan contract.Plan
-	if err := contract.DecodeRecord(raw, &plan); err != nil || plan.RegionCount != 8 || plan.WorkerCount != 3 {
+	if err := contract.Decode(raw, &plan); err != nil || plan.RegionCount != 8 || plan.WorkerCount != 3 {
 		t.Fatalf("%+v %v", plan, err)
 	}
 	code, _, log = invoke(t, "plan", args)

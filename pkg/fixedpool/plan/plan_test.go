@@ -258,7 +258,7 @@ func overwrite(t *testing.T, name string, data []byte) {
 }
 
 func TestCorruptPlanRejected(t *testing.T) {
-	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "old objects_file", "shard hash", "duplicate region", "out of bounds", "wrong count", "extra region"} {
+	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "duplicate region", "out of bounds", "wrong count", "extra region"} {
 		t.Run(kind, func(t *testing.T) {
 			m, data, spec := fixture(t)
 			result, err := Prepare(context.Background(), data, spec)
@@ -275,10 +275,6 @@ func TestCorruptPlanRejected(t *testing.T) {
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"extra":1,"schema_version":1`), 1))
 			case "duplicate":
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1))
-			case "old objects_file":
-				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"objects_file":{"path":"object-urls.json","sha256":"`+strings.Repeat("a", 64)+`"}`), 1))
-			case "shard hash":
-				overwrite(t, filepath.Join(filepath.Dir(result.Path), "shards/0.json"), []byte("[1,2,4]\n"))
 			case "duplicate region", "out of bounds", "wrong count", "extra region":
 				var p contract.Plan
 				if err := contract.Decode(body, &p); err != nil {
@@ -312,7 +308,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 				}
 				return
 			}
-			_, _, _, err = load(context.Background(), result.Path, m, contract.Digest(data), nil)
+			_, _, _, err = LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0)
 			if err == nil {
 				t.Fatal("corrupt plan accepted")
 			}
@@ -365,7 +361,7 @@ func TestPublicationAndConsumptionValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	overwrite(t, result.Path, encoded)
-	if _, _, _, err := load(context.Background(), result.Path, m, contract.Digest(data), nil); err != nil {
+	if _, _, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0); err != nil {
 		t.Fatalf("consumer repeated canonical order validation: %v", err)
 	}
 	expected, err := permutation(context.Background(), p.RegionCount)

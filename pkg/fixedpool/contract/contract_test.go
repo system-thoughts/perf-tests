@@ -46,10 +46,6 @@ func TestStrictManifest(t *testing.T) {
 		"case alias root":  strings.Replace(valid, `"schema_version":1`, `"schema_version":1,"SCHEMA_VERSION":1`, 1),
 		"case alias inner": strings.Replace(valid, `"block_bytes":16`, `"block_bytes":16,"BLOCK_BYTES":16`, 1),
 		"null":             strings.Replace(valid, `"object_id":0`, `"object_id":null`, 1),
-		"float":            strings.Replace(valid, `"object_size_bytes":64`, `"object_size_bytes":64.0`, 1),
-		"exponent":         strings.Replace(valid, `"object_size_bytes":64`, `"object_size_bytes":6.4e1`, 1),
-		"negative":         strings.Replace(valid, `"object_count":1`, `"object_count":-1`, 1),
-		"string number":    strings.Replace(valid, `"object_count":1`, `"object_count":"1"`, 1),
 		"schema":           strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1),
 		"seed":             strings.Replace(valid, ContentSeed, "other-seed", 1),
 		"second value":     valid + "{}",
@@ -87,49 +83,6 @@ func TestStrictManifest(t *testing.T) {
 	for _, forbidden := range []string{"range_bytes", "worker_count", "rate", "run_id"} {
 		if _, ok := raw[forbidden]; ok {
 			t.Fatal("manifest depends on run input", forbidden)
-		}
-	}
-}
-
-func TestNullableRecordsRemainStrict(t *testing.T) {
-	// Explicit null means an unknown observation, not a missing required field.
-	type record struct {
-		Code    *int           `json:"exit_code"`
-		State   string         `json:"state"`
-		Native  map[string]any `json:"native"`
-		Message string         `json:"message,omitempty"`
-	}
-	valid := `{"exit_code":null,"state":"unknown","native":{"metric":null}}`
-	var got record
-	if err := DecodeRecord([]byte(valid), &got); err != nil || got.Code != nil || got.State != "unknown" {
-		t.Fatalf("%+v: %v", got, err)
-	}
-	for _, raw := range []string{
-		`{"state":"unknown","native":{}}`,
-		`{"exit_code":null,"state":null,"native":{}}`,
-		`{"exit_code":null,"state":"unknown","native":null}`,
-		`{"exit_code":null,"state":"unknown","native":{},"extra":1}`,
-		`{"exit_code":null,"state":"unknown","STATE":"unknown","native":{}}`,
-		`{"exit_code":null,"exit_code":0,"state":"unknown","native":{}}`,
-		`{"exit_code":null,"state":"unknown","native":{"x":1,"x":2}}`,
-		valid + `{}`,
-	} {
-		if err := DecodeRecord([]byte(raw), &got); err == nil {
-			t.Fatalf("accepted ambiguous/incomplete record: %s", raw)
-		}
-	}
-}
-
-func TestSourceURL(t *testing.T) {
-	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://source.example:0", "http://source.example:65536"} {
-		if _, err := NormalizeBaseURL(input); err == nil {
-			t.Errorf("accepted %q", input)
-		}
-	}
-	for input, want := range map[string]string{"http://LOCALHOST.": "http://localhost.", "http://x.localhost": "http://x.localhost", "http://127.0.0.1": "http://127.0.0.1", "http://[::1]": "http://[::1]", "http://[::ffff:127.0.0.1]": "http://[::ffff:127.0.0.1]", "http://SOURCE.example:80/base/": "http://source.example/base", "http://source.example": "http://source.example", "http://[2001:db8::1]:8080/": "http://[2001:db8::1]:8080", "http://source.example/base%2Fname//v/": "http://source.example/base%2Fname//v"} {
-		got, err := NormalizeBaseURL(input)
-		if err != nil || got != want {
-			t.Errorf("normalize %q = %q, %v; want %q", input, got, err, want)
 		}
 	}
 }

@@ -65,14 +65,14 @@ func newClient(c Config) (*http.Client, *http.Transport, error) {
 	return client, transport, nil
 }
 
-func request(ctx context.Context, client *http.Client, o contract.Object, rangeRequest bool) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.URL, nil)
+func request(ctx context.Context, client *http.Client, url string, size uint64, rangeRequest bool) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header = FixedHeaders()
 	if rangeRequest {
-		req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", min(uint64(65536), o.Size)-1))
+		req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", min(uint64(65536), size)-1))
 	}
 	return client.Do(req)
 }
@@ -91,14 +91,14 @@ func responseIdentity(resp *http.Response, c Config) (string, string, error) {
 	return task, server, nil
 }
 
-func fullRead(ctx context.Context, client *http.Client, c Config, o contract.Object, timeout time.Duration) (string, error) {
+func fullRead(ctx context.Context, client *http.Client, c Config, o contract.Object, size uint64, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := request(ctx, client, o, false)
+	resp, err := request(ctx, client, c.Source.BaseURL+"/objects/sha256/"+o.SHA256, size, false)
 	if err != nil {
 		return "", contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET: %w", err))
 	}
-	task, err := readFullResponse(ctx, resp, c, o)
+	task, err := readFullResponse(ctx, resp, c, o, size)
 	closeErr := resp.Body.Close()
 	if err == nil {
 		err = closeErr
@@ -106,7 +106,7 @@ func fullRead(ctx context.Context, client *http.Client, c Config, o contract.Obj
 	return task, err
 }
 
-func readFullResponse(ctx context.Context, resp *http.Response, c Config, o contract.Object) (string, error) {
+func readFullResponse(ctx context.Context, resp *http.Response, c Config, o contract.Object, size uint64) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET requires HTTP 200, got %d", resp.StatusCode))
 	}
@@ -115,18 +115,18 @@ func readFullResponse(ctx context.Context, resp *http.Response, c Config, o cont
 		return task, err
 	}
 	hash := sha256.New()
-	n, err := io.CopyBuffer(hash, io.LimitReader(resp.Body, int64(o.Size)+1), make([]byte, 64*1024))
+	n, err := io.CopyBuffer(hash, io.LimitReader(resp.Body, int64(size)+1), make([]byte, 64*1024))
 	if err != nil {
 		return task, contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET after %d bytes: %w", resp.StatusCode, n, err))
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
-	if uint64(n) != o.Size || digest != o.SHA256 {
-		return task, contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET body mismatch: received %d, expected %d bytes; SHA-256 expected %s, actual %s", resp.StatusCode, n, o.Size, o.SHA256, digest))
+	if uint64(n) != size || digest != o.SHA256 {
+		return task, contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET body mismatch: received %d, expected %d bytes; SHA-256 expected %s, actual %s", resp.StatusCode, n, size, o.SHA256, digest))
 	}
 	return task, ctx.Err()
 }
 
-func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, task string, timeout time.Duration) error {
+func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, size uint64, task string, timeout time.Duration) error {
 	// Attempts, reads and backoffs share one budget.
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -135,7 +135,7 @@ func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.O
 		if err := ctx.Err(); err != nil {
 			return contract.Tag(Unverified, err)
 		}
-		err := rangeCheckOnce(ctx, client, c, o, task)
+		err := rangeCheckOnce(ctx, client, c, o, size, task)
 		if err == nil {
 			return nil
 		}
@@ -169,12 +169,12 @@ func retryableRangeError(err error) bool {
 		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
 }
 
-func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contract.Object, task string) error {
-	resp, err := request(ctx, client, o, true)
+func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contract.Object, size uint64, task string) error {
+	resp, err := request(ctx, client, c.Source.BaseURL+"/objects/sha256/"+o.SHA256, size, true)
 	if err != nil {
 		return contract.Tag(Unverified, fmt.Errorf("range check: %w", err))
 	}
-	err = readProbe(ctx, resp, c, o, task)
+	err = readProbe(ctx, resp, c, o, size, task)
 	closeErr := resp.Body.Close()
 	if err == nil {
 		err = contract.Tag(Unverified, closeErr)
@@ -182,7 +182,7 @@ func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contra
 	return err
 }
 
-func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Object, expectedTask string) error {
+func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Object, objectSize uint64, expectedTask string) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return contract.Tag(contract.PrepareFailed, fmt.Errorf("range check requires HTTP 206, got %d", resp.StatusCode))
 	}
@@ -193,8 +193,8 @@ func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Ob
 	if task != expectedTask {
 		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d: task identity changed during range check", resp.StatusCode))
 	}
-	size := min(uint64(65536), o.Size)
-	want := "bytes 0-" + strconv.FormatUint(size-1, 10) + "/" + strconv.FormatUint(o.Size, 10)
+	size := min(uint64(65536), objectSize)
+	want := "bytes 0-" + strconv.FormatUint(size-1, 10) + "/" + strconv.FormatUint(objectSize, 10)
 	if len(resp.Header.Values("Content-Range")) != 1 || resp.Header.Get("Content-Range") != want || resp.ContentLength != int64(size) {
 		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d range check Content-Range/length mismatch: %q, %d", resp.StatusCode, resp.Header.Get("Content-Range"), resp.ContentLength))
 	}

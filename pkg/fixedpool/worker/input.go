@@ -148,7 +148,7 @@ func PrepareInput(ctx context.Context, e Environment, output string, stdout io.W
 	if err != nil {
 		return err
 	}
-	spec := Spec{RunID: e.RunID, WorkerID: e.WorkerID, PlanID: contract.Digest(planRaw), ManifestID: manifestID, Manifest: manifestPath, Shard: shardPath, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: prepared.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
+	spec := Spec{BaseURL: prepared.Source.BaseURL, RunID: e.RunID, WorkerID: e.WorkerID, PlanID: contract.Digest(planRaw), ManifestID: manifestID, Manifest: manifestPath, Shard: shardPath, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: prepared.Target.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
 	// This file is private to one invocation. It is consumed only after the
 	// helper succeeds; it is neither a published result nor a reusable input.
 	raw, err := contract.Encode(spec)
@@ -158,10 +158,10 @@ func PrepareInput(ctx context.Context, e Environment, output string, stdout io.W
 	if err = os.WriteFile(output, raw, 0600); err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(filepath.Dir(output), "proxy"), []byte(prepared.Proxy+"\n"), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(filepath.Dir(output), "proxy"), []byte(prepared.Target.Proxy+"\n"), 0600); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "fixed-pool inputs checked (%d ms)\n  Dataset: path=%q sha256=%s B=%d N=%d source=%q\n  Plan: path=%q sha256=%s R=%d W=%d regions=%d\n  Preparation: path=%q sha256=%s (recorded ready; current cache state is not rechecked)\n  Target: proxy=%q expected_server_ip=%s\n  Worker: id=%d shard=%q sha256=%s regions=%d\n  Load: total_rate=%d local_rate=%d duration=%s timeout=%s graceful_stop=%s pre_allocated_vus=%d max_vus=%d\n", time.Since(started).Milliseconds(), manifestPath, manifestID, m.ObjectSize, m.ObjectCount, m.BaseURL, e.Plan, spec.PlanID, p.RangeBytes, p.WorkerCount, p.RegionCount, e.Preparation, contract.Digest(prepRaw), prepared.Proxy, prepared.ExpectedServerIP, e.WorkerID, shardPath, p.Shards[e.WorkerID].SHA256, spec.RegionCount, e.Rate, spec.Rate, e.Duration, e.Timeout, e.GracefulStop, e.PreAllocatedVUs, e.MaxVUs)
+	_, err = fmt.Fprintf(stdout, "fixed-pool inputs checked (%d ms)\n  Dataset: path=%q sha256=%s B=%d N=%d source=%q\n  Plan: path=%q sha256=%s R=%d W=%d regions=%d\n  Preparation: path=%q sha256=%s (recorded ready; current cache state is not rechecked)\n  Target: proxy=%q expected_server_ip=%s\n  Worker: id=%d shard=%q sha256=%s regions=%d\n  Load: total_rate=%d local_rate=%d duration=%s timeout=%s graceful_stop=%s pre_allocated_vus=%d max_vus=%d\n", time.Since(started).Milliseconds(), manifestPath, manifestID, m.ObjectSize, m.ObjectCount, prepared.Source.BaseURL, e.Plan, spec.PlanID, p.RangeBytes, p.WorkerCount, p.RegionCount, e.Preparation, contract.Digest(prepRaw), prepared.Target.Proxy, prepared.Target.ExpectedServerIP, e.WorkerID, shardPath, p.Shards[e.WorkerID].SHA256, spec.RegionCount, e.Rate, spec.Rate, e.Duration, e.Timeout, e.GracefulStop, e.PreAllocatedVUs, e.MaxVUs)
 	if err == nil && e.RunID != "" {
 		_, err = fmt.Fprintf(stdout, "  Run ID: %s\n", e.RunID)
 	}

@@ -77,33 +77,18 @@ func ValidateManifest(m Manifest) error {
 	if m.ObjectCount == 0 || m.ObjectCount > MaxSafeInteger || m.ObjectCount != uint64(len(m.Objects)) {
 		return fmt.Errorf("manifest.object_count: expected a positive count <= %d equal to len(objects)=%d, actual %d", MaxSafeInteger, len(m.Objects), m.ObjectCount)
 	}
-	base, err := NormalizeBaseURL(m.BaseURL)
-	if err != nil {
-		return err
-	}
-	if base != m.BaseURL {
-		return fmt.Errorf("manifest.base_url: expected normalized %q, actual %q", base, m.BaseURL)
-	}
 	seen := make(map[string]bool, len(m.Objects))
 	for i, object := range m.Objects {
 		switch {
 		case object.ID != uint64(i):
 			return fmt.Errorf("manifest.objects[%d].object_id: expected %d, actual %d", i, i, object.ID)
-		case object.Size != m.ObjectSize:
-			return fmt.Errorf("manifest.objects[%d].size_bytes: expected %d, actual %d", i, m.ObjectSize, object.Size)
 		case !ValidDigest(object.SHA256):
 			return fmt.Errorf("manifest.objects[%d].sha256: expected 64 lowercase hex digits, actual %q", i, object.SHA256)
 		}
-		want := "objects/sha256/" + object.SHA256
-		switch {
-		case object.RelativePath != want:
-			return fmt.Errorf("manifest.objects[%d].relative_path: expected %q, actual %q", i, want, object.RelativePath)
-		case object.URL != base+"/"+want:
-			return fmt.Errorf("manifest.objects[%d].url: expected %q, actual %q", i, base+"/"+want, object.URL)
-		case seen[want]:
-			return fmt.Errorf("manifest.objects[%d].relative_path: duplicate %q", i, want)
+		if seen[object.SHA256] {
+			return fmt.Errorf("manifest.objects[%d].sha256: duplicate %q", i, object.SHA256)
 		}
-		seen[want] = true
+		seen[object.SHA256] = true
 	}
 	return nil
 }

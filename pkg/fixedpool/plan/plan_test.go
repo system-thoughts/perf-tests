@@ -27,7 +27,6 @@ import (
 	"testing"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
-	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/dataset"
 )
 
 func TestPermutationAndRateVectors(t *testing.T) {
@@ -119,15 +118,12 @@ func TestIntegerAndResourceBoundaries(t *testing.T) {
 
 func fixture(t *testing.T) (contract.Manifest, []byte, Spec) {
 	t.Helper()
-	r, err := dataset.Prepare(context.Background(), dataset.Spec{Root: filepath.Join(t.TempDir(), "source"), Size: 64, Count: 2, BaseURL: "http://source.example", GenerationWorkers: 1})
+	m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 2, Objects: []contract.Object{{ID: 0, SHA256: strings.Repeat("a", 64)}, {ID: 1, SHA256: strings.Repeat("b", 64)}}}
+	data, err := contract.Encode(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(r.ManifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r.Manifest, data, Spec{Directory: filepath.Join(t.TempDir(), "plans"), RangeBytes: 16, Workers: 3}
+	return m, data, Spec{Directory: filepath.Join(t.TempDir(), "plans"), RangeBytes: 16, Workers: 3}
 }
 
 func readFile(t *testing.T, name string) []byte {

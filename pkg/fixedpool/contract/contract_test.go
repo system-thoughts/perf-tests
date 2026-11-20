@@ -26,7 +26,7 @@ import (
 
 func validManifest() Manifest {
 	sha := "66895a8785a1dee4951313348a79a5ee9def315d6728a9d303c8b6fe74a0fb13"
-	return Manifest{SchemaVersion: 1, Generator: Generator{Version: ContentAlgorithm, Seed: ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 1, BaseURL: "http://source.example", Objects: []Object{{ID: 0, Size: 64, SHA256: sha, RelativePath: "objects/sha256/" + sha, URL: "http://source.example/objects/sha256/" + sha}}}
+	return Manifest{SchemaVersion: 1, Generator: Generator{Version: ContentAlgorithm, Seed: ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 1, Objects: []Object{{ID: 0, SHA256: sha}}}
 }
 
 func TestStrictManifest(t *testing.T) {
@@ -52,7 +52,6 @@ func TestStrictManifest(t *testing.T) {
 		"string number":    strings.Replace(valid, `"object_count":1`, `"object_count":"1"`, 1),
 		"schema":           strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1),
 		"seed":             strings.Replace(valid, ContentSeed, "other-seed", 1),
-		"path traversal":   strings.Replace(valid, `"relative_path":"objects/sha256/`, `"relative_path":"../objects/sha256/`, 1),
 		"second value":     valid + "{}",
 	}
 	for name, input := range cases {
@@ -173,9 +172,8 @@ func TestManifestDiagnosticsIdentifyInputAndField(t *testing.T) {
 		field  string
 		change func(*Manifest)
 	}{
+		{"objects[0].sha256", func(m *Manifest) { m.Objects[0].SHA256 = "bad" }},
 		{"object_count", func(m *Manifest) { m.ObjectCount = 2 }},
-		{"objects[0].size_bytes", func(m *Manifest) { m.Objects[0].Size = 63 }},
-		{"objects[0].url", func(m *Manifest) { m.Objects[0].URL = "http://wrong.test/object" }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			m := validManifest()

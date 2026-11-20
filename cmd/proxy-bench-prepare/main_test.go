@@ -25,7 +25,6 @@ import (
 	"testing"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
-	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/dataset"
 )
 
 func invoke(t *testing.T, action string, args []string) (int, string, string) {
@@ -36,7 +35,7 @@ func invoke(t *testing.T, action string, args []string) (int, string, string) {
 }
 func TestDatasetOnlyCLI(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "source")
-	args := []string{"--size", "64", "--count", "2", "--root", root, "--base-url", "http://source.example"}
+	args := []string{"--size", "64", "--count", "2", "--root", root}
 	code, out, log := invoke(t, "data", args)
 	if code != 0 || !strings.Contains(out, "objects=2 bytes=128") {
 		t.Fatalf("%d %s %s", code, out, log)
@@ -59,20 +58,13 @@ func TestRejectedOldAndInvalidArguments(t *testing.T) {
 	}
 }
 func TestIndependentPlanAndRetry(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "source")
-	pool, err := dataset.Prepare(context.Background(), dataset.Spec{Root: root, Size: 64, Count: 2, BaseURL: "http://source.example", GenerationWorkers: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
 	input := filepath.Join(t.TempDir(), "dataset-manifest.json")
-	data, err := os.ReadFile(pool.ManifestPath)
+	manifest := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 2, Objects: []contract.Object{{ID: 0, SHA256: strings.Repeat("a", 64)}, {ID: 1, SHA256: strings.Repeat("b", 64)}}}
+	data, err := contract.Encode(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(input, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(root); err != nil {
 		t.Fatal(err)
 	}
 	plans := filepath.Join(t.TempDir(), "plans")

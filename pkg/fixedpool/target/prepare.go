@@ -32,6 +32,7 @@ type Result struct {
 	PreparationID  string   `json:"preparation_id,omitempty"`
 	ManifestSHA256 string   `json:"manifest_sha256"`
 	Target         Target   `json:"target"`
+	Source         Source   `json:"source"`
 	Prepare        *Options `json:"prepare,omitempty"`
 	StartedAt      string   `json:"started_at,omitempty"`
 	EndedAt        string   `json:"ended_at,omitempty"`
@@ -85,7 +86,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 				next++
 				mu.Unlock()
 				stage := "full_get"
-				task, err := fullRead(ctx, client, c, o, time.Duration(s.Options.RequestTimeoutMS)*time.Millisecond)
+				task, err := fullRead(ctx, client, c, o, m.ObjectSize, time.Duration(s.Options.RequestTimeoutMS)*time.Millisecond)
 				if err == nil {
 					mu.Lock()
 					if other, exists := tasks[task]; exists {
@@ -97,12 +98,12 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 				}
 				if err == nil {
 					stage = "range_check"
-					err = rangeCheck(ctx, client, c, o, task, time.Duration(s.Options.ReadyTimeoutMS)*time.Millisecond)
+					err = rangeCheck(ctx, client, c, o, m.ObjectSize, task, time.Duration(s.Options.ReadyTimeoutMS)*time.Millisecond)
 				}
 				if err != nil {
 					mu.Lock()
 					if failure == nil {
-						failure = fmt.Errorf("object_id=%d stage=%s url=%q task_id=%q expected_server_ip=%q: %w", o.ID, stage, o.URL, task, c.Target.ExpectedServerIP, err)
+						failure = fmt.Errorf("object_id=%d stage=%s url=%q task_id=%q expected_server_ip=%q: %w", o.ID, stage, c.Source.BaseURL+"/objects/sha256/"+o.SHA256, task, c.Target.ExpectedServerIP, err)
 					}
 					mu.Unlock()
 					return
@@ -117,7 +118,7 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	if failure != nil {
 		return result, failure
 	}
-	result = Result{SchemaVersion: 1, PreparationID: uuid.NewString(), ManifestSHA256: contract.Digest(raw), Target: c.Target, Prepare: &s.Options, StartedAt: started, EndedAt: timestamp(), Status: StatusReady, ObjectCount: m.ObjectCount}
+	result = Result{SchemaVersion: 1, PreparationID: uuid.NewString(), ManifestSHA256: contract.Digest(raw), Target: c.Target, Source: c.Source, Prepare: &s.Options, StartedAt: started, EndedAt: timestamp(), Status: StatusReady, ObjectCount: m.ObjectCount}
 	data, err := contract.Encode(result)
 	if err == nil {
 		err = ctx.Err()

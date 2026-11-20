@@ -73,7 +73,6 @@ func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var spec dataset.Spec
 	var generationWorkers uint64
 	flags.StringVar(&spec.Root, "root", "", "required: source directory; one writer, existing owned outputs are not replaced")
-	flags.StringVar(&spec.BaseURL, "base-url", "", "required: source HTTP base URL reachable by the Seed")
 	command.DecimalFlag(flags, &spec.Size, "size", 0, "required: positive decimal object size in bytes")
 	command.DecimalFlag(flags, &spec.Count, "count", 0, "required: positive decimal object count")
 	command.DecimalFlag(flags, &generationWorkers, "generation-workers", 1, "optional: positive generation concurrency (default 1)")
@@ -98,7 +97,7 @@ func runData(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = writeErr
 	}
 	if err == nil {
-		_, err = fmt.Fprintf(stdout, "Data generated: B=%d N=%d source=%q manifest=%q sha256=%s\n", result.Manifest.ObjectSize, result.Manifest.ObjectCount, result.Manifest.BaseURL, result.ManifestPath, result.ManifestSHA256)
+		_, err = fmt.Fprintf(stdout, "Data generated: B=%d N=%d manifest=%q sha256=%s\n", result.Manifest.ObjectSize, result.Manifest.ObjectCount, result.ManifestPath, result.ManifestSHA256)
 	}
 	return finish(ctx, stderr, "data", err)
 }
@@ -190,6 +189,6 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target; reuse a valid success record downstream, or explicitly clean conflicting output items or select another --out. This command does not clear the Seed cache.\n")
 		return code
 	}
-	_, err = fmt.Fprintf(stdout, "Seed prepared: MANIFEST=%q sha256=%s objects=%d target=%s expected_server_ip=%s record=%q\n", spec.Manifest, result.ManifestSHA256, result.ObjectCount, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out+"/target-preparation.json")
+	_, err = fmt.Fprintf(stdout, "Seed prepared: MANIFEST=%q sha256=%s objects=%d source=%q target=%s expected_server_ip=%s record=%q\n", spec.Manifest, result.ManifestSHA256, result.ObjectCount, result.Source.BaseURL, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out+"/target-preparation.json")
 	return finish(ctx, stderr, "seed-cache", err)
 }

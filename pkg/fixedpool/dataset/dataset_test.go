@@ -107,7 +107,7 @@ func TestGeneratorWriteFailureAndCancellation(t *testing.T) {
 func newPool(t *testing.T, count uint64, workers int) (string, Result) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "source")
-	result, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: count, BaseURL: "http://SOURCE.example:80/base/", GenerationWorkers: workers})
+	result, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: count, GenerationWorkers: workers})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestIndependentDatasetContentAndConcurrency(t *testing.T) {
 	}
 	for i, object := range original.Manifest.Objects {
 		for _, pool := range []string{other, third} {
-			if !bytes.Equal(read(t, filepath.Join(root, object.RelativePath)), read(t, filepath.Join(pool, object.RelativePath))) {
+			if !bytes.Equal(read(t, filepath.Join(root, "objects/sha256/"+object.SHA256)), read(t, filepath.Join(pool, "objects/sha256/"+object.SHA256))) {
 				t.Fatal("pool count or concurrency changes common bytes")
 			}
 		}
@@ -154,13 +154,13 @@ func TestExistingDatasetAndNamespaceRejected(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "notes"), []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	old, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: 2, BaseURL: "http://source.example", GenerationWorkers: 1})
+	old, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: 2, GenerationWorkers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := read(t, old.ManifestPath)
 	for _, count := range []uint64{1, 2, 3} {
-		if _, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: count, BaseURL: "http://source.example", GenerationWorkers: 1}); contract.ErrorCode(err) != contract.DataConflict {
+		if _, err := Prepare(context.Background(), Spec{Root: root, Size: 64, Count: count, GenerationWorkers: 1}); contract.ErrorCode(err) != contract.DataConflict {
 			t.Fatalf("accepted reuse or resize count=%d: %v", count, err)
 		}
 	}
@@ -172,7 +172,7 @@ func TestExistingDatasetAndNamespaceRejected(t *testing.T) {
 	if err := os.Symlink(external, filepath.Join(linkRoot, "objects")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Prepare(context.Background(), Spec{Root: linkRoot, Size: 64, Count: 1, BaseURL: "http://source.example", GenerationWorkers: 1}); err == nil {
+	if _, err := Prepare(context.Background(), Spec{Root: linkRoot, Size: 64, Count: 1, GenerationWorkers: 1}); err == nil {
 		t.Fatal("accepted populated namespace symlink")
 	}
 	entries, err := os.ReadDir(external)
@@ -194,7 +194,7 @@ func TestObjectConflictDoesNotOverwrite(t *testing.T) {
 	if err := os.WriteFile(name, []byte("sentinel"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeObject(context.Background(), root, 0, 64, "http://source.example"); contract.ErrorCode(err) != contract.DataConflict {
+	if _, err := writeObject(context.Background(), root, 0, 64); contract.ErrorCode(err) != contract.DataConflict {
 		t.Fatalf("object conflict: %v", err)
 	}
 	if string(read(t, name)) != "sentinel" {
@@ -206,7 +206,7 @@ func TestInterruptedNewDatasetAndExplicitCleanup(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	spec := Spec{Root: root, Size: 64, Count: 2, BaseURL: "http://source.example", GenerationWorkers: 2}
+	spec := Spec{Root: root, Size: 64, Count: 2, GenerationWorkers: 2}
 	result, err := Prepare(ctx, spec)
 	if !errors.Is(err, context.Canceled) || result.ManifestPath != "" {
 		t.Fatalf("interrupted publication: %+v %v", result, err)

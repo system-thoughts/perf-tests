@@ -52,9 +52,14 @@ type Options struct {
 	ReadyTimeoutMS   uint64 `json:"ready_timeout_ms"`
 }
 
+type Source struct {
+	BaseURL string `json:"base_url"`
+}
+
 type Config struct {
 	SchemaVersion int    `json:"schema_version"`
 	Target        Target `json:"target"`
+	Source        Source `json:"source"`
 }
 
 // ReadConfig validates and fingerprints the same file bytes.
@@ -94,6 +99,10 @@ func ReadConfig(name string) (c Config, digest string, err error) {
 	}
 	if err != nil {
 		return c, "", contract.Tag(contract.ContractMismatch, err)
+	}
+	c.Source.BaseURL, err = contract.NormalizeBaseURL(c.Source.BaseURL)
+	if err != nil {
+		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("source.base_url: %w", err))
 	}
 	return c, contract.Digest(raw), nil
 }

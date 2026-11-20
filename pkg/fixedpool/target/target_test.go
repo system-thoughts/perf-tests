@@ -53,19 +53,19 @@ func TestPreparationReusesHTTPConnection(t *testing.T) {
 	}))
 	defer proxy.Close()
 	config := Config{
-		Target: Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"},
+		Source: Source{BaseURL: "http://object.test"}, Target: Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"},
 	}
 	client, transport, err := newClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer transport.CloseIdleConnections()
-	object := contract.Object{ID: 0, Size: 4, SHA256: contract.Digest(body), URL: "http://object.test/0"}
-	task, err := fullRead(context.Background(), client, config, object, 2*time.Second)
+	object := contract.Object{ID: 0, SHA256: contract.Digest(body)}
+	task, err := fullRead(context.Background(), client, config, object, 4, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rangeCheck(context.Background(), client, config, object, task, 2*time.Second); err != nil {
+	if err := rangeCheck(context.Background(), client, config, object, 4, task, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	first, second := <-requests, <-requests
@@ -88,7 +88,7 @@ func response(status int, body []byte) *http.Response {
 
 func TestFullResponseIntegrity(t *testing.T) {
 	// Independent SHA-256 vector for the three bytes "abc".
-	object := contract.Object{ID: 0, Size: 3, SHA256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}
+	object := contract.Object{ID: 0, SHA256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}
 	config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}}
 	for _, name := range []string{"valid", "status", "identity", "ambiguous-task", "encoding", "digest", "length", "cancelled"} {
 		t.Run(name, func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestFullResponseIntegrity(t *testing.T) {
 			case "cancelled":
 				cancel()
 			}
-			task, err := readFullResponse(ctx, resp, config, object)
+			task, err := readFullResponse(ctx, resp, config, object, 3)
 			if name == "valid" {
 				if err != nil || task != "object-task" {
 					t.Fatalf("task=%q err=%v", task, err)
@@ -129,7 +129,7 @@ func TestRangeResponseIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	object := contract.Object{ID: 0, Size: 4}
+	object := contract.Object{ID: 0}
 	config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}}
 	for _, name := range []string{"valid", "missing-marker", "false-marker", "ambiguous-marker", "status", "task", "range", "length", "bytes", "bytes-without-marker", "cancelled"} {
 		t.Run(name, func(t *testing.T) {
@@ -161,7 +161,7 @@ func TestRangeResponseIntegrity(t *testing.T) {
 			case "bytes":
 				resp.Body = io.NopCloser(strings.NewReader("xxxx"))
 			}
-			err := readProbe(ctx, resp, config, object, "object-task")
+			err := readProbe(ctx, resp, config, object, 4, "object-task")
 			if name == "valid" || name == "missing-marker" || name == "false-marker" || name == "ambiguous-marker" {
 				if err != nil {
 					t.Fatal(err)
@@ -203,10 +203,10 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 				_, _ = w.Write(body)
 			}))
 			defer proxy.Close()
-			m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 4, ObjectCount: 2, BaseURL: "http://objects.test", Objects: []contract.Object{}}
+			m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 4, ObjectCount: 2, Objects: []contract.Object{}}
 			for i, body := range bodies {
 				sha := contract.Digest(body)
-				m.Objects = append(m.Objects, contract.Object{ID: uint64(i), Size: 4, SHA256: sha, RelativePath: "objects/sha256/" + sha, URL: "http://objects.test/objects/sha256/" + sha})
+				m.Objects = append(m.Objects, contract.Object{ID: uint64(i), SHA256: sha})
 			}
 			raw, _ := contract.Encode(m)
 			manifest := filepath.Join(dir, "manifest.json")
@@ -214,7 +214,7 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			config := filepath.Join(dir, "target.yaml")
-			if err := os.WriteFile(config, []byte(fmt.Sprintf("schema_version: 1\ntarget:\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n", proxy.URL)), 0600); err != nil {
+			if err := os.WriteFile(config, []byte(fmt.Sprintf("schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n", proxy.URL)), 0600); err != nil {
 				t.Fatal(err)
 			}
 			out := filepath.Join(dir, "out")
@@ -328,7 +328,7 @@ func TestRangeTransportRecovery(t *testing.T) {
 					return resp, nil
 				})}
 				started := time.Now()
-				err := rangeCheck(ctx, client, config, contract.Object{ID: 0, Size: 4, URL: "http://object.test/0"}, "object-task", budget)
+				err := rangeCheck(ctx, client, config, contract.Object{ID: 0}, 4, "object-task", budget)
 				success := name == reset || name == truncated
 				if attempts != wantAttempts || (err == nil) != success {
 					t.Fatalf("attempts=%d want=%d err=%v", attempts, wantAttempts, err)
@@ -356,12 +356,13 @@ func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "target.yaml")
-	original := "schema_version: 1\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
+	original := "schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
 	for _, test := range []struct {
 		name, raw string
 		valid     bool
 	}{
 		{"valid", original, true},
+		{"invalid-source", strings.ReplaceAll(original, "http://objects.test", "https://objects.test"), false},
 		{"invalid-proxy", strings.ReplaceAll(original, "http://seed.test:4001", "abc"), false},
 		{"invalid-server", strings.ReplaceAll(original, "192.0.2.10", "bad"), false},
 		{"unknown", original + "prepare: {}\n", false},
@@ -383,7 +384,7 @@ func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
 
 func TestRemovedInstanceConfigurationRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "target.yaml")
-	raw := "schema_version: 1\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n  instance_ref: old\n"
+	raw := "schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n  instance_ref: old\n"
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 		t.Fatal(err)
 	}

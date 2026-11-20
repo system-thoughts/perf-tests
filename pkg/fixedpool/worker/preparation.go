@@ -24,16 +24,24 @@ import (
 )
 
 // CheckPreparation consumes the selected success record, not live cache state.
-func CheckPreparation(raw []byte, manifestID string) (target.Target, error) {
+func CheckPreparation(raw []byte, manifestID string) (target.Result, error) {
 	var r target.Result
 	if err := contract.DecodeRecord(raw, &r); err != nil {
-		return r.Target, err
+		return r, err
 	}
 	if r.SchemaVersion != 1 || r.Status != target.StatusReady {
-		return r.Target, fmt.Errorf("schema_version/status: expected 1/ready, actual %d/%q", r.SchemaVersion, r.Status)
+		return r, fmt.Errorf("schema_version/status: expected 1/ready, actual %d/%q", r.SchemaVersion, r.Status)
 	}
 	if r.ManifestSHA256 != manifestID {
-		return r.Target, fmt.Errorf("manifest_sha256: expected %s, actual %s", manifestID, r.ManifestSHA256)
+		return r, fmt.Errorf("manifest_sha256: expected %s, actual %s", manifestID, r.ManifestSHA256)
 	}
-	return r.Target, r.Target.Validate()
+	if err := r.Target.Validate(); err != nil {
+		return r, err
+	}
+	base, err := contract.NormalizeBaseURL(r.Source.BaseURL)
+	if err != nil {
+		return r, fmt.Errorf("source.base_url: %w", err)
+	}
+	r.Source.BaseURL = base
+	return r, nil
 }

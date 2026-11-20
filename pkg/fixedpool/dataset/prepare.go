@@ -35,7 +35,6 @@ type Spec struct {
 	Root              string
 	Size              uint64
 	Count             uint64
-	BaseURL           string
 	GenerationWorkers int
 }
 
@@ -58,11 +57,7 @@ func Prepare(ctx context.Context, spec Spec) (result Result, err error) {
 	if err := contract.PrepareOutput(root, "objects", "dataset-manifest.json", ".dataset-manifest.json.tmp"); err != nil {
 		return result, err
 	}
-	base, err := contract.NormalizeBaseURL(spec.BaseURL)
-	if err != nil {
-		return result, contract.Tag(contract.InputInvalid, err)
-	}
-	manifest := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: contract.BlockBytes}, ObjectSize: spec.Size, BaseURL: base, Objects: []contract.Object{}}
+	manifest := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: contract.BlockBytes}, ObjectSize: spec.Size, Objects: []contract.Object{}}
 	if spec.Count > math.MaxUint64/spec.Size {
 		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("dataset byte count overflows uint64"))
 	}
@@ -128,7 +123,7 @@ func generateObjects(ctx context.Context, root string, workers int, manifest *co
 	for range min(workers, len(manifest.Objects)) {
 		group.Go(func() {
 			for id := range jobs {
-				object, err := writeObject(ctx, root, id, manifest.ObjectSize, manifest.BaseURL)
+				object, err := writeObject(ctx, root, id, manifest.ObjectSize)
 				if err != nil {
 					once.Do(func() { firstErr = err; cancel() })
 					return
@@ -153,7 +148,7 @@ dispatch:
 	return ctx.Err()
 }
 
-func writeObject(ctx context.Context, root string, id, size uint64, base string) (object contract.Object, err error) {
+func writeObject(ctx context.Context, root string, id, size uint64) (object contract.Object, err error) {
 	name := filepath.Join(root, "objects", fmt.Sprintf(".object-%016x.part", id))
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -182,5 +177,5 @@ func writeObject(ctx context.Context, root string, id, size uint64, base string)
 	if err := os.Remove(name); err != nil {
 		return object, err
 	}
-	return contract.Object{ID: id, Size: size, SHA256: sha, RelativePath: relative, URL: base + "/" + relative}, nil
+	return contract.Object{ID: id, SHA256: sha}, nil
 }

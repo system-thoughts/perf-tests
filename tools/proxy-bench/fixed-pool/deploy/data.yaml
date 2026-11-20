@@ -34,8 +34,6 @@ spec:
         - '4194304'
         - --count
         - '2'
-        - --base-url
-        - http://fixed-pool-source.benchmark.svc.cluster.local
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

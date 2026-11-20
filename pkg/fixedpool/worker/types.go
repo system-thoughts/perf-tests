@@ -24,6 +24,7 @@ type Issue struct {
 	Message string `json:"message"`
 }
 type Spec struct {
+	BaseURL          string            `json:"base_url"`
 	RunID            string            `json:"run_id,omitempty"`
 	WorkerID         uint64            `json:"worker_id"`
 	PlanID           string            `json:"plan_id"`

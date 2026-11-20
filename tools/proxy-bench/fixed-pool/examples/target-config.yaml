@@ -1,4 +1,6 @@
 schema_version: 1
+source:
+  base_url: http://fixed-pool-source.benchmark.svc.cluster.local
 target:
   ref: seed-one
   proxy: http://192.0.2.10:4001

@@ -35,11 +35,8 @@ type Generator struct {
 }
 
 type Object struct {
-	ID           uint64 `json:"object_id"`
-	Size         uint64 `json:"size_bytes"`
-	SHA256       string `json:"sha256"`
-	RelativePath string `json:"relative_path"`
-	URL          string `json:"url"`
+	ID     uint64 `json:"object_id"`
+	SHA256 string `json:"sha256"`
 }
 
 type Manifest struct {
@@ -47,7 +44,6 @@ type Manifest struct {
 	Generator     Generator `json:"generator"`
 	ObjectSize    uint64    `json:"object_size_bytes"`
 	ObjectCount   uint64    `json:"object_count"`
-	BaseURL       string    `json:"base_url"`
 	Objects       []Object  `json:"objects"`
 }
 

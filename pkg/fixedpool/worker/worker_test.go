@@ -77,10 +77,10 @@ func save(t *testing.T, name string, value any) []byte {
 func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
-	m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 2, BaseURL: "http://origin.test", Objects: []contract.Object{}}
+	m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 64, ObjectCount: 2, Objects: []contract.Object{}}
 	for i, ch := range []string{"a", "b"} {
 		sha := strings.Repeat(ch, 64)
-		m.Objects = append(m.Objects, contract.Object{ID: uint64(i), Size: 64, SHA256: sha, RelativePath: "objects/sha256/" + sha, URL: "http://origin.test/objects/sha256/" + sha})
+		m.Objects = append(m.Objects, contract.Object{ID: uint64(i), SHA256: sha})
 	}
 	manifestPath := filepath.Join(dir, "manifest.json")
 	manifestRaw := save(t, manifestPath, m)
@@ -97,7 +97,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	planRaw := save(t, planPath, p)
 	prepared := target.Target{Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}
 	prepPath := filepath.Join(dir, "target-preparation.json")
-	save(t, prepPath, target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: prepared, Status: target.StatusReady})
+	save(t, prepPath, target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: prepared, Source: target.Source{BaseURL: "http://origin.test"}, Status: target.StatusReady})
 	env, err := ReadEnvironment(baseEnv())
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err := contract.DecodeRecord(raw, &spec); err != nil {
 		t.Fatal(err)
 	}
-	if spec.Manifest != manifestPath || spec.ManifestID != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
+	if spec.BaseURL != "http://origin.test" || spec.Manifest != manifestPath || spec.ManifestID != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
 		t.Fatalf("%+v", spec)
 	}
 	proxy, err := os.ReadFile(filepath.Join(dir, "proxy"))
@@ -138,8 +138,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 
 func TestPreparationBindings(t *testing.T) {
 	manifestID := strings.Repeat("a", 64)
-	original := target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: target.Target{Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}, Status: target.StatusReady}
-	for _, field := range []string{"valid", "status", "manifest_sha256", "proxy", "schema_version"} {
+	original := target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: target.Target{Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}, Source: target.Source{BaseURL: "http://origin.test"}, Status: target.StatusReady}
+	for _, field := range []string{"valid", "status", "manifest_sha256", "proxy", "source", "schema_version"} {
 		t.Run(field, func(t *testing.T) {
 			value := original
 			switch field {
@@ -149,6 +149,8 @@ func TestPreparationBindings(t *testing.T) {
 				value.ManifestSHA256 = strings.Repeat("b", 64)
 			case "proxy":
 				value.Target.Proxy = "abc"
+			case "source":
+				value.Source.BaseURL = "https://unsupported.test"
 			case "schema_version":
 				value.SchemaVersion = 0
 			}
@@ -160,7 +162,7 @@ func TestPreparationBindings(t *testing.T) {
 			if (err == nil) != (field == "valid") {
 				t.Fatalf("%+v %v", actual, err)
 			}
-			if field == "valid" && actual != original.Target {
+			if field == "valid" && (actual.Target != original.Target || actual.Source != original.Source) {
 				t.Fatal(actual)
 			}
 		})

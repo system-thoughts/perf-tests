@@ -86,14 +86,23 @@ func TestPermutationAndRateVectors(t *testing.T) {
 }
 
 func TestIntegerAndResourceBoundaries(t *testing.T) {
-	for _, g := range [][4]uint64{{0, 1, 1, 1}, {64, 0, 16, 1}, {64, 2, 0, 1}, {64, 2, 3, 1}, {64, 2, 16, 9}, {contract.MaxSafeInteger + 1, 1, 1, 1}, {contract.MaxSafeInteger, 1, 1, 1}, {1, contract.MaxRegions + 1, 1, 1}, {2, contract.MaxRegions, 1, 1}} {
+	for _, g := range [][4]uint64{{0, 1, 1, 1}, {64, 0, 16, 1}, {64, 2, 0, 1}, {64, 2, 65, 1}, {64, 2, 16, 9}, {contract.MaxSafeInteger + 1, 1, 1, 1}, {contract.MaxSafeInteger, 1, 1, 1}, {1, contract.MaxRegions + 1, 1, 1}, {2, contract.MaxRegions, 1, 1}} {
 		if _, _, err := Geometry(g[0], g[1], g[2], g[3]); err == nil {
 			t.Fatalf("accepted geometry %v", g)
 		}
 	}
-	for _, g := range [][4]uint64{{1, contract.MaxRegions, 1, 1}, {contract.MaxSafeInteger, 1, contract.MaxSafeInteger, 1}} {
-		if _, _, err := Geometry(g[0], g[1], g[2], g[3]); err != nil {
-			t.Fatal(err)
+	for _, test := range []struct {
+		input      [4]uint64
+		per, total uint64
+	}{
+		{[4]uint64{1, contract.MaxRegions, 1, 1}, 1, contract.MaxRegions},
+		{[4]uint64{contract.MaxSafeInteger, 1, contract.MaxSafeInteger, 1}, 1, 1},
+		{[4]uint64{64, 2, 3, 1}, 21, 42},
+	} {
+		g := test.input
+		per, total, err := Geometry(g[0], g[1], g[2], g[3])
+		if err != nil || per != test.per || total != test.total {
+			t.Fatalf("geometry %v: %d/%d %v", g, per, total, err)
 		}
 	}
 	for _, test := range []struct {

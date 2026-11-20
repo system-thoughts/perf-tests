@@ -68,7 +68,7 @@ func TestIndependentPlanAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := filepath.Join(t.TempDir(), "plans")
-	code, _, log := invoke(t, "plan", []string{"--manifest", input, "--range", "3", "--out", plans})
+	code, _, log := invoke(t, "plan", []string{"--manifest", input, "--range", "65", "--out", plans})
 	if code != 2 || !strings.Contains(log, contract.InputInvalid) || !strings.Contains(log, input) {
 		t.Fatalf("%d %s", code, log)
 	}
@@ -93,6 +93,11 @@ func TestIndependentPlanAndRetry(t *testing.T) {
 	if code != 2 || !strings.Contains(log, contract.BudgetExceeded) || !strings.Contains(out, "estimated_file_bytes=") {
 		t.Fatalf("%d %s %s", code, out, log)
 	}
+	code, out, log = invoke(t, "plan", []string{"--manifest", input, "--range", "3", "--out", filepath.Join(t.TempDir(), "tail-plan")})
+	if code != 0 || !strings.Contains(out, "regions_per_object=21 regions=42 planned_bytes=126 excluded_tail_bytes=2") {
+		t.Fatalf("%d %s %s", code, out, log)
+	}
+
 }
 func TestPlanRejectsDatasetArguments(t *testing.T) {
 	for _, args := range [][]string{{"--size", "64"}, {"extra"}} {

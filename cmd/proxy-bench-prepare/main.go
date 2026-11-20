@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"os/signal"
 	"syscall"
@@ -155,6 +156,14 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if err == nil {
 		_, err = fmt.Fprintf(stdout, "Plan generated: MANIFEST=%q sha256=%s B=%d N=%d R=%d W=%d regions=%d PLAN=%q sha256=%s\n", name, digest, result.ObjectSize, result.ObjectCount, spec.RangeBytes, spec.Workers, result.RegionCount, result.Path, result.SHA256)
+	}
+	if err == nil {
+		// Aggregate byte counts may exceed uint64 even when each region is valid.
+		planned := new(big.Int).SetUint64(result.RegionCount)
+		planned.Mul(planned, new(big.Int).SetUint64(spec.RangeBytes))
+		excluded := new(big.Int).SetUint64(result.ObjectCount)
+		excluded.Mul(excluded, new(big.Int).SetUint64(result.ObjectSize%spec.RangeBytes))
+		_, err = fmt.Fprintf(stdout, "Access scope: R=%d regions_per_object=%d regions=%d planned_bytes=%s excluded_tail_bytes=%s\n", spec.RangeBytes, result.ObjectSize/spec.RangeBytes, result.RegionCount, planned.String(), excluded.String())
 	}
 	return finish(ctx, stderr, "plan", err)
 }

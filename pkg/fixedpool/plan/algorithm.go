@@ -29,8 +29,8 @@ import (
 )
 
 func Geometry(size, count, rangeBytes, workers uint64) (perObject, total uint64, err error) {
-	if size == 0 || size > contract.MaxSafeInteger || count == 0 || count > contract.MaxSafeInteger || rangeBytes == 0 || rangeBytes > contract.MaxSafeInteger || size%rangeBytes != 0 {
-		return 0, 0, fmt.Errorf("positive exact size/count/range required, with size divisible by range")
+	if size == 0 || size > contract.MaxSafeInteger || count == 0 || count > contract.MaxSafeInteger || rangeBytes == 0 || rangeBytes > contract.MaxSafeInteger || rangeBytes > size {
+		return 0, 0, fmt.Errorf("positive exact size/count/range required, with range <= size")
 	}
 	perObject = size / rangeBytes
 	if perObject > contract.MaxRegions || count > contract.MaxRegions/perObject {

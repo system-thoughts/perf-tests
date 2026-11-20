@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +50,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 			return e, fmt.Errorf("%s is not supported by fixed-pool", key)
 		}
 	}
-	for _, key := range []string{"MANIFEST", "PLAN", "TARGET_PREPARATION", "RUN_ID", "RATE"} {
+	for _, key := range []string{"MANIFEST", "PLAN", "TARGET_PREPARATION", "RATE"} {
 		if values[key] == "" {
 			return e, fmt.Errorf("%s is required", key)
 		}
@@ -60,7 +59,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	e.Plan = values["PLAN"]
 	e.Preparation = values["TARGET_PREPARATION"]
 	e.RunID = values["RUN_ID"]
-	if !identifier.MatchString(e.RunID) {
+	if e.RunID != "" && !identifier.MatchString(e.RunID) {
 		return e, fmt.Errorf("RUN_ID must be 1..128 ASCII letters/digits/._-, starting with a letter or digit")
 	}
 	integer := func(key string, fallback, minValue, maxValue uint64) uint64 {
@@ -110,7 +109,7 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	return e, err
 }
 
-func PrepareInput(ctx context.Context, e Environment, scripts, output string, stdout io.Writer) error {
+func PrepareInput(ctx context.Context, e Environment, output string, stdout io.Writer) error {
 	started := time.Now()
 	m, manifestRaw, err := contract.ReadManifest(e.Manifest)
 	if err != nil {
@@ -137,39 +136,19 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 	if err != nil {
 		return contract.Tag(contract.InputInvalid, err)
 	}
-	versions := map[string]string{"worker_support": "fixed-pool-v1", "go": runtime.Version()}
-	for name, label := range map[string]string{
-		"benchmark.js":      "benchmark.js",
-		"run-benchmark.sh":  "run-benchmark.sh",
-		"lib/plan.js":       "lib/plan.js",
-		"lib/summary.js":    "lib/summary.js",
-		"../lib/summary.js": "shared_lib_summary.js",
-	} {
-		raw, err := os.ReadFile(filepath.Join(scripts, name))
-		if err != nil {
-			return err
-		}
-		versions[label+"_sha256"] = contract.Digest(raw)
-	}
-	run := RunSpec{SchemaVersion: 1, RunID: e.RunID, Manifest: contract.FileRef{Path: "dataset-manifest.json", SHA256: manifestID}, TargetPreparation: contract.FileRef{Path: "target-preparation.json", SHA256: contract.Digest(prepRaw)}, Plan: contract.FileRef{Path: "plan/request-plan.json", SHA256: contract.Digest(planRaw)}, Target: prepared, TotalRate: e.Rate, WorkerCount: p.WorkerCount, DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), Workers: []Allocation{}, ToolVersions: versions}
-	for i, s := range p.Shards {
-		run.Workers = append(run.Workers, Allocation{s.WorkerID, s.RegionCount, rates[i]})
-	}
 	headers := map[string]string{}
 	for key, value := range target.FixedHeaders() {
 		headers[key] = value[0]
 	}
-	manifest := contract.FileRef{Path: e.Manifest, SHA256: manifestID}
-	manifest.Path, err = filepath.Abs(e.Manifest)
+	manifestPath, err := filepath.Abs(e.Manifest)
 	if err != nil {
 		return err
 	}
-	shard := contract.FileRef{Path: p.Shards[e.WorkerID].Path, SHA256: p.Shards[e.WorkerID].SHA256}
-	shard.Path, err = filepath.Abs(filepath.Join(filepath.Dir(e.Plan), shard.Path))
+	shardPath, err := filepath.Abs(filepath.Join(filepath.Dir(e.Plan), p.Shards[e.WorkerID].Path))
 	if err != nil {
 		return err
 	}
-	spec := Spec{SchemaVersion: 1, RunID: e.RunID, WorkerID: e.WorkerID, PlanID: run.Plan.SHA256, ManifestID: manifestID, Manifest: manifest, Shard: shard, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: prepared.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: run.DurationMS, TimeoutMS: run.TimeoutMS, GracefulStopMS: run.GracefulStopMS, PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
+	spec := Spec{RunID: e.RunID, WorkerID: e.WorkerID, PlanID: contract.Digest(planRaw), ManifestID: manifestID, Manifest: manifestPath, Shard: shardPath, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: prepared.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
 	// This file is private to one invocation. It is consumed only after the
 	// helper succeeds; it is neither a published result nor a reusable input.
 	raw, err := contract.Encode(spec)
@@ -182,13 +161,10 @@ func PrepareInput(ctx context.Context, e Environment, scripts, output string, st
 	if err = os.WriteFile(filepath.Join(filepath.Dir(output), "proxy"), []byte(prepared.Proxy+"\n"), 0600); err != nil {
 		return err
 	}
-	if err = Emit(stdout, "RUN_SPEC", run); err != nil {
-		return err
+	_, err = fmt.Fprintf(stdout, "fixed-pool inputs checked (%d ms)\n  Dataset: path=%q sha256=%s B=%d N=%d source=%q\n  Plan: path=%q sha256=%s R=%d W=%d regions=%d\n  Preparation: path=%q sha256=%s (recorded ready; current cache state is not rechecked)\n  Target: proxy=%q expected_server_ip=%s\n  Worker: id=%d shard=%q sha256=%s regions=%d\n  Load: total_rate=%d local_rate=%d duration=%s timeout=%s graceful_stop=%s pre_allocated_vus=%d max_vus=%d\n", time.Since(started).Milliseconds(), manifestPath, manifestID, m.ObjectSize, m.ObjectCount, m.BaseURL, e.Plan, spec.PlanID, p.RangeBytes, p.WorkerCount, p.RegionCount, e.Preparation, contract.Digest(prepRaw), prepared.Proxy, prepared.ExpectedServerIP, e.WorkerID, shardPath, p.Shards[e.WorkerID].SHA256, spec.RegionCount, e.Rate, spec.Rate, e.Duration, e.Timeout, e.GracefulStop, e.PreAllocatedVUs, e.MaxVUs)
+	if err == nil && e.RunID != "" {
+		_, err = fmt.Fprintf(stdout, "  Run ID: %s\n", e.RunID)
 	}
-	if err = Emit(stdout, "WORKER_SPEC", spec); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(stdout, "Inputs checked: MANIFEST=%q sha256=%s B=%d N=%d source=%q PLAN=%q sha256=%s R=%d W=%d WORKER_ID=%d shard=%q count=%d TARGET_PREPARATION=%q elapsed_ms=%d\n", manifest.Path, manifestID, m.ObjectSize, m.ObjectCount, m.BaseURL, e.Plan, spec.PlanID, p.RangeBytes, p.WorkerCount, e.WorkerID, shard.Path, spec.RegionCount, e.Preparation, time.Since(started).Milliseconds())
 	return err
 }
 

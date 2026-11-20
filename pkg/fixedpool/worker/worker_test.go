@@ -19,7 +19,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,14 +31,14 @@ import (
 )
 
 func baseEnv() []string {
-	return []string{"MANIFEST=m", "PLAN=p", "TARGET_PREPARATION=t", "RATE=100", "RUN_ID=run-1"}
+	return []string{"MANIFEST=m", "PLAN=p", "TARGET_PREPARATION=t", "RATE=100"}
 }
 func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 	e, err := ReadEnvironment(baseEnv())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 {
+	if e.RunID != "" || e.WorkerID != 0 || e.Duration != 300*time.Second || e.Timeout != 30*time.Second || e.GracefulStop != 35*time.Second || e.PreAllocatedVUs != 64 || e.MaxVUs != 512 {
 		t.Fatal(e)
 	}
 	for _, extra := range []string{"RATE=0", "RATE=+100", "RATE=1.5", "RATE=2147483648", "WORKER_ID=-1", "RUN_ID=../x", "DURATION=0s", "DURATION=1us", "DURATION=100ms", "DURATION=999ms", "TIMEOUT=bad", "TIMEOUT=9223372036854ms", "GRACEFUL_STOP=30s", "MAX_VUS=63", "PRE_ALLOCATED_VUS=0", "MODE=", "RANGE=0-10", "TARGET_URL=http://x", "PROXY_BENCH_UNKNOWN=x", "X_DRAGONFLY_TAG=x"} {
@@ -49,7 +48,7 @@ func TestEnvironmentDefaultsAndRejections(t *testing.T) {
 			}
 		})
 	}
-	for _, extra := range []string{"K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
+	for _, extra := range []string{"RUN_ID=", "RUN_ID=custom-1", "K6_THRESHOLDS={}", "K6_NO_CONNECTION_REUSE=true", "K6_SCENARIOS={}"} {
 		if _, err := ReadEnvironment(append(baseEnv(), extra)); err != nil {
 			t.Fatalf("native k6 environment rejected: %v", err)
 		}
@@ -99,16 +98,6 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	prepared := target.Target{Proxy: "http://seed.test:4001", ExpectedServerIP: "192.0.2.1"}
 	prepPath := filepath.Join(dir, "target-preparation.json")
 	save(t, prepPath, target.Result{SchemaVersion: 1, ManifestSHA256: manifestID, Target: prepared, Status: target.StatusReady})
-	scripts := filepath.Join(dir, "scripts")
-	for _, name := range []string{"benchmark.js", "run-benchmark.sh", "lib/plan.js", "lib/summary.js", "../lib/summary.js"} {
-		path := filepath.Join(scripts, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	env, err := ReadEnvironment(baseEnv())
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +107,7 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	env.Preparation = prepPath
 	output := filepath.Join(dir, "worker-input.json")
 	var logs bytes.Buffer
-	if err := PrepareInput(ctx, env, scripts, output, &logs); err != nil {
+	if err := PrepareInput(ctx, env, output, &logs); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(output)
@@ -129,32 +118,20 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if err := contract.DecodeRecord(raw, &spec); err != nil {
 		t.Fatal(err)
 	}
-	if spec.Manifest.Path != manifestPath || spec.Manifest.SHA256 != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
+	if spec.Manifest != manifestPath || spec.ManifestID != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
 		t.Fatalf("%+v", spec)
 	}
 	proxy, err := os.ReadFile(filepath.Join(dir, "proxy"))
 	if err != nil || string(proxy) != prepared.Proxy+"\n" {
 		t.Fatalf("proxy=%q err=%v", proxy, err)
 	}
-	var records []string
-	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.HasPrefix(line, Prefix) {
-			records = append(records, line)
-		}
-	}
-	if len(records) != 2 {
+	if strings.Contains(logs.String(), Prefix) || strings.Count(logs.String(), "fixed-pool inputs checked") != 1 || !strings.Contains(logs.String(), "local_rate=50") {
 		t.Fatal(logs.String())
-	}
-	for i, prefix := range []string{Prefix + "RUN_SPEC_V1 ", Prefix + "WORKER_SPEC_V1 "} {
-		payload, ok := strings.CutPrefix(records[i], prefix)
-		if !ok || !json.Valid([]byte(payload)) {
-			t.Fatalf("bad log record %q", records[i])
-		}
 	}
 	if !strings.Contains(logs.String(), "B=64 N=2") || !strings.Contains(logs.String(), "R=16 W=2") {
 		t.Fatal(logs.String())
 	}
-	if err := PrepareInput(ctx, env, scripts, filepath.Join(dir, "missing/input.json"), io.Discard); err == nil {
+	if err := PrepareInput(ctx, env, filepath.Join(dir, "missing/input.json"), io.Discard); err == nil {
 		t.Fatal("ignored output failure")
 	}
 }

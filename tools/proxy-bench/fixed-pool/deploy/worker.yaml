@@ -57,8 +57,6 @@ spec:
           value: '10'
         - name: DURATION
           value: 30s
-        - name: RUN_ID
-          value: run-001
         - name: WORKER_ID
           value: '0'
       volumes:

@@ -18,7 +18,7 @@ export function summaryOutputs(data, spec) {
     rate: spec.rate, preAllocatedVUs: spec.pre_allocated_vus, maxVUs: spec.max_vus,
     expectedStatus: 206,
     details: [
-      ['Run ID', spec.run_id], ['Worker', String(spec.worker_id)], ['Plan', spec.plan_id],
+      ...(spec.run_id ? [['Run ID', spec.run_id]] : []), ['Worker', String(spec.worker_id)], ['Plan', spec.plan_id],
       ['Consumed', `${Number.isFinite(consumed) ? consumed : 'n/a'} plan entries; shard ${spec.region_count} regions (repeats included)`],
     ],
   });

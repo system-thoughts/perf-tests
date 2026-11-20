@@ -23,7 +23,7 @@ wait_child() {
   fi
 }
 trap forward_signal INT TERM
-proxy-bench-worker-support --script-dir "$SCRIPT_DIR" --output "$WORKER_SPEC" &
+proxy-bench-worker-support --output "$WORKER_SPEC" &
 child=$!
 [ "$interrupted" -eq 0 ] || forward_signal
 wait_child
@@ -32,7 +32,7 @@ child=''
 [ "$interrupted" -eq 0 ] || exit 130
 [ "$prepare_code" -eq 0 ] || exit "$prepare_code"
 
-# Derive the proxy from the validated target configuration, without eval.
+# Derive the proxy from the selected successful preparation, without eval.
 IFS= read -r HTTP_PROXY < "$work_dir/proxy" || exit 3
 # Go/k6's proxy transport must see the real environment, without bypasses.
 unset http_proxy https_proxy HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
@@ -49,17 +49,11 @@ wait_child
 k6_code=$child_code
 child=''
 ended_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-# ReadEnvironment already validated this decimal; normalize leading zeroes for JSON.
-worker_id=${WORKER_ID:-0}
-while [ "${worker_id#0}" != "$worker_id" ]; do worker_id=${worker_id#0}; done
-worker_id=${worker_id:-0}
-reason=completed
-[ "$k6_code" -eq 0 ] || reason=failed
-if [ "$k6_code" -eq 126 ] || [ "$k6_code" -eq 127 ]; then reason=start_failed; fi
-[ "$interrupted" -eq 0 ] || reason=interrupted
-# JSON strings below are validated identifiers, UTC timestamps or fixed enums.
-# Never interpolate free-form paths or error messages without a JSON encoder.
-printf 'PROXY_BENCH_FIXED_POOL_WORKER_EXIT_V1 {"run_id":"%s","worker_id":%s,"process_started_at":"%s","process_ended_at":"%s","exit_code":%s,"termination_reason":"%s"}\n' \
-  "$RUN_ID" "$worker_id" "$started_at" "$ended_at" "$k6_code" "$reason"
+interrupted_json=false
+[ "$interrupted" -eq 0 ] || interrupted_json=true
+# Only fixed-format timestamps, numbers and a boolean are interpolated.
+# Free-form text requires a JSON encoder.
+printf 'PROXY_BENCH_FIXED_POOL_WORKER_EXIT_V1 {"process_started_at":"%s","process_ended_at":"%s","exit_code":%s,"interrupted":%s}\n' \
+  "$started_at" "$ended_at" "$k6_code" "$interrupted_json"
 [ "$interrupted" -eq 0 ] || exit 130
 exit "$k6_code"

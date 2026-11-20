@@ -30,9 +30,12 @@ export const formatBytes = fmt.bytes;
 // Latency rows of the report and the k6 metric behind each one.
 const LATENCY_ROWS = [
   ['request', 'http_req_duration'],
+  ['blocked', 'http_req_blocked'],
   ['connect', 'http_req_connecting'],
+  ['sending', 'http_req_sending'],
   ['first byte', 'http_req_waiting'],
   ['download', 'http_req_receiving'],
+  ['iteration', 'iteration_duration'],
 ];
 
 // k6 omits dropped_iterations when none were dropped. Other missing
@@ -105,8 +108,10 @@ export function textSummary(data, context) {
     '',
     row(
       'Requests',
-      `${fmt.int(requests)} total, ${Number.isFinite(value('http_reqs', 'rate')) ? value('http_reqs', 'rate').toFixed(1) : 'n/a'} req/s, ${fmt.int(dropped)} dropped`,
+      `${fmt.int(requests)} total, ${Number.isFinite(value('http_reqs', 'rate')) ? value('http_reqs', 'rate').toFixed(3) : 'n/a'} req/s, ${fmt.int(dropped)} dropped`,
     ),
+    row('Iterations', `${fmt.int(value('iterations', 'count'))} complete`),
+    row('VUs observed', `${fmt.int(value('vus', 'max'))} active peak, ${fmt.int(value('vus_max', 'max'))} allocated peak`),
     row(
       'Failed',
       `${fmt.int(failed)} of ${fmt.int(requests)} (${fmt.pct(failed, requests)}), ` +

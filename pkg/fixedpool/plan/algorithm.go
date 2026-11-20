@@ -19,6 +19,7 @@ package plan
 import (
 	"context"
 	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -50,26 +51,17 @@ func permutation(ctx context.Context, count uint64) ([]uint32, error) {
 		return nil, err
 	}
 	key := sha256.Sum256([]byte(contract.OrderSeed))
-	cipher, err := aes.NewCipher(key[:])
+	blockCipher, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}
-	var counter, stream [aes.BlockSize]byte
-	position := len(stream)
+	var counter [aes.BlockSize]byte
+	stream := cipher.NewCTR(blockCipher, counter[:])
+	var word [4]byte
 	next := func() uint64 {
-		if position == len(stream) {
-			cipher.Encrypt(stream[:], counter[:])
-			for i := len(counter) - 1; i >= 0; i-- {
-				counter[i]++
-				if counter[i] != 0 {
-					break
-				}
-			}
-			position = 0
-		}
-		value := binary.BigEndian.Uint32(stream[position : position+4])
-		position += 4
-		return uint64(value)
+		clear(word[:])
+		stream.XORKeyStream(word[:], word[:])
+		return uint64(binary.BigEndian.Uint32(word[:]))
 	}
 	values := make([]uint32, int(count))
 	for i := range values {

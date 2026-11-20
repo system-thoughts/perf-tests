@@ -19,6 +19,7 @@ package dataset
 import (
 	"context"
 	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -36,24 +37,22 @@ func Generate(ctx context.Context, writer io.Writer, objectID, size uint64) erro
 		return fmt.Errorf("object size outside exact integer range")
 	}
 	key := sha256.Sum256([]byte(contract.ContentSeed))
-	cipher, err := aes.NewCipher(key[:])
+	blockCipher, err := aes.NewCipher(key[:])
 	if err != nil {
 		return err
 	}
 	buffer := make([]byte, writeBufferBytes)
 	var counter [aes.BlockSize]byte
 	binary.BigEndian.PutUint64(counter[:8], objectID)
-	var block uint64
+	stream := cipher.NewCTR(blockCipher, counter[:])
 	for remaining := size; remaining > 0; {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		length := min(uint64(len(buffer)), remaining)
-		for offset := uint64(0); offset < length; offset += aes.BlockSize {
-			binary.BigEndian.PutUint64(counter[8:], block)
-			cipher.Encrypt(buffer[offset:offset+aes.BlockSize], counter[:])
-			block++
-		}
+		// CTR over zero bytes reproduces the fixed AES counter stream.
+		clear(buffer[:length])
+		stream.XORKeyStream(buffer[:length], buffer[:length])
 		written, err := writer.Write(buffer[:length])
 		if err != nil {
 			return err

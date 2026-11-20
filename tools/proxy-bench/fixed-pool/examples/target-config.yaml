@@ -3,8 +3,3 @@ target:
   ref: seed-one
   proxy: http://192.0.2.10:4001
   expected_server_ip: 192.0.2.10
-# Defaults apply when prepare or individual fields are omitted.
-prepare:
-  concurrency: 1
-  request_timeout_ms: 1800000
-  ready_timeout_ms: 60000

@@ -27,7 +27,6 @@ import (
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/dataset"
-	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/target"
 )
 
 func invokeData(t *testing.T, args []string) (int, dataReport) {
@@ -119,19 +118,14 @@ func TestPlanRejectsDatasetArguments(t *testing.T) {
 func TestArgumentFailuresAreStructuredAndDoNotPrepare(t *testing.T) {
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "missing-manifest.json")
-	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--manifest", manifest, "--target-config", filepath.Join(dir, "target.yaml"), "--out", filepath.Join(dir, "preparation")}} {
+	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--concurrency", "0"}, {"--manifest", manifest, "--target-config", filepath.Join(dir, "target.yaml"), "--out", filepath.Join(dir, "preparation")}} {
 		var stdout, stderr bytes.Buffer
 		code := run(context.Background(), append([]string{"seed-cache"}, args...), &stdout, &stderr)
-		var result target.Result
-		if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-			t.Fatal(err)
+		if code != 2 || stdout.Len() != 0 || stderr.Len() == 0 {
+			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, stdout.String(), stderr.String())
 		}
-		if code != 2 || result.SchemaVersion != 1 || result.Status != target.StatusUnverified || len(result.Errors) == 0 || result.EvidenceFile != nil {
-			t.Fatalf("args=%v code=%d result=%+v", args, code, result)
-		}
-		if len(args) > 0 && args[0] == "--manifest" &&
-			(!strings.Contains(result.Errors[0].Message, "MANIFEST") || !strings.Contains(result.Errors[0].Message, manifest)) {
-			t.Fatalf("missing manifest diagnosis: %+v", result.Errors)
+		if len(args) > 0 && args[0] == "--manifest" && (!strings.Contains(stderr.String(), "MANIFEST") || !strings.Contains(stderr.String(), manifest)) {
+			t.Fatal(stderr.String())
 		}
 	}
 }

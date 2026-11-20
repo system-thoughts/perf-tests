@@ -211,36 +211,32 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&spec.Manifest, "manifest", "", "required: immutable dataset manifest")
 	flags.StringVar(&spec.TargetConfig, "target-config", "", "required: target YAML with proxy and expected server IP")
 	flags.StringVar(&spec.Out, "out", "", "required: new or empty output directory; never overwrite results")
-	parseErr := flags.Parse(args)
-	if errors.Is(parseErr, flag.ErrHelp) {
+	command.DecimalFlag(flags, &spec.Options.Concurrency, "concurrency", 1, "optional: concurrent object preparations (default 1)")
+	command.DecimalFlag(flags, &spec.Options.RequestTimeoutMS, "request-timeout-ms", 1800000, "optional: full GET timeout in milliseconds (default 1800000)")
+	command.DecimalFlag(flags, &spec.Options.ReadyTimeoutMS, "ready-timeout-ms", 60000, "optional: total Range check budget in milliseconds (default 60000)")
+	err := flags.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
-	if parseErr == nil && flags.NArg() != 0 {
-		parseErr = fmt.Errorf("unexpected positional arguments")
+	if err == nil && flags.NArg() != 0 {
+		err = contract.Tag(contract.InputInvalid, fmt.Errorf("unexpected positional arguments"))
 	}
-	if parseErr != nil {
-		issues, code := command.Issues(ctx, "target_prepare", contract.Tag(contract.InputInvalid, parseErr))
-		result := target.NewResult()
-		for _, issue := range issues {
-			result.Errors = append(result.Errors, target.Issue{Code: issue.Code, Stage: issue.Stage, Message: issue.Message})
-		}
-		diagnostic(stderr, "seed-cache", parseErr)
-		_, _ = fmt.Fprintln(stderr, "Correct the input options (proxy-bench-prepare seed-cache --help), then rerun with valid inputs and a new or empty --out.")
-		return command.Output(stdout, stderr, result, code)
+	if err != nil {
+		err = contract.Tag(contract.InputInvalid, err)
 	}
-	result, err := target.Prepare(ctx, spec)
+	var result target.Result
+	if err == nil {
+		result, err = target.Prepare(ctx, spec)
+	}
 	_, code := command.Issues(ctx, "target_prepare", err)
 	if err != nil {
 		diagnostic(stderr, "seed-cache", fmt.Errorf("MANIFEST %q TARGET_CONFIG %q OUT %q: %w", spec.Manifest, spec.TargetConfig, spec.Out, err))
-		for _, issue := range result.Errors {
-			if issue.ObjectID != nil && issue.Stage != "target_prepare" {
-				_, _ = fmt.Fprintf(stderr, "object_id=%d stage=%s code=%s: %s\n", *issue.ObjectID, issue.Stage, issue.Code, issue.Message)
-				break
-			}
-		}
-		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache --manifest %q --target-config %q --out <new-or-empty-directory>. Failed records are not ready inputs; this command does not clear the Seed cache.\n", spec.Manifest, spec.TargetConfig)
-	} else {
-		_, _ = fmt.Fprintf(stderr, "Seed prepared: MANIFEST=%q sha256=%s objects=%d target=%s expected_server_ip=%s OUT=%q\n", spec.Manifest, *result.ManifestSHA256, *result.ObjectCount, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out)
+		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target and a new or explicitly cleaned --out. This command does not clear the Seed cache.\n")
+		return code
 	}
-	return command.Output(stdout, stderr, result, code)
+	_, err = fmt.Fprintf(stdout, "Seed prepared: MANIFEST=%q sha256=%s objects=%d target=%s expected_server_ip=%s record=%q\n", spec.Manifest, result.ManifestSHA256, result.ObjectCount, result.Target.Proxy, result.Target.ExpectedServerIP, spec.Out+"/target-preparation.json")
+	if err != nil {
+		return 3
+	}
+	return 0
 }

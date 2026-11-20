@@ -33,13 +33,9 @@ import (
 )
 
 const (
-	StatusReady      = "ready"
-	StatusFailed     = "failed"
-	StatusUnverified = "unverified"
-	headerFalse      = "false"
-	headerTrue       = "true"
-	// Historical compatibility identifier; readiness is defined by data checks.
-	Method      = "http-full-body-and-finished-v1"
+	StatusReady = "ready"
+	headerFalse = "false"
+	headerTrue  = "true"
 	Unsupported = "TARGET_UNSUPPORTED"
 	Unverified  = "TARGET_UNVERIFIED"
 )
@@ -57,9 +53,8 @@ type Options struct {
 }
 
 type Config struct {
-	SchemaVersion int     `json:"schema_version"`
-	Target        Target  `json:"target"`
-	Prepare       Options `json:"prepare"`
+	SchemaVersion int    `json:"schema_version"`
+	Target        Target `json:"target"`
 }
 
 // ReadConfig validates and fingerprints the same file bytes.
@@ -90,20 +85,6 @@ func ReadConfig(name string) (c Config, digest string, err error) {
 	if !ok {
 		return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("target config must be a mapping"))
 	}
-	defaults := map[string]any{"concurrency": uint64(1), "request_timeout_ms": uint64(1800000), "ready_timeout_ms": uint64(60000)}
-	if opts, exists := fields["prepare"]; exists {
-		options, ok := opts.(map[string]any)
-		if !ok {
-			return c, "", contract.Tag(contract.ContractMismatch, fmt.Errorf("prepare must be a mapping"))
-		}
-		for key, value := range defaults {
-			if _, exists := options[key]; !exists {
-				options[key] = value
-			}
-		}
-	} else {
-		fields["prepare"] = defaults
-	}
 	data, err := json.Marshal(fields)
 	if err == nil {
 		err = contract.Decode(data, &c)
@@ -118,25 +99,33 @@ func ReadConfig(name string) (c Config, digest string, err error) {
 }
 
 func validateConfig(c Config) error {
-	u, err := url.Parse(c.Target.Proxy)
-	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(c.Target.Proxy, "#") {
-		return fmt.Errorf("target.proxy: expected an HTTP proxy origin without credentials or path/query/fragment; actual %q", c.Target.Proxy)
-	}
-	if u.Port() != "" {
-		if n, err := strconv.ParseUint(u.Port(), 10, 16); err != nil || n == 0 {
-			return fmt.Errorf("target.proxy: invalid port in %q", c.Target.Proxy)
-		}
-	}
 	if c.SchemaVersion != 1 {
 		return fmt.Errorf("schema_version: expected 1, actual %d", c.SchemaVersion)
 	}
-	if net.ParseIP(c.Target.ExpectedServerIP) == nil {
-		return fmt.Errorf("target.expected_server_ip: expected an IP address, actual %q", c.Target.ExpectedServerIP)
+	return c.Target.Validate()
+}
+
+func (t Target) Validate() error {
+	u, err := url.Parse(t.Proxy)
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(t.Proxy, "#") {
+		return fmt.Errorf("target.proxy: expected an HTTP proxy origin without credentials or path/query/fragment; actual %q", t.Proxy)
 	}
-	if c.Prepare.Concurrency == 0 || c.Prepare.Concurrency > uint64(^uint(0)>>1) || c.Prepare.Concurrency > contract.MaxSafeInteger {
-		return fmt.Errorf("prepare.concurrency: expected a positive JavaScript-safe native integer, actual %d", c.Prepare.Concurrency)
+	if u.Port() != "" {
+		if n, err := strconv.ParseUint(u.Port(), 10, 16); err != nil || n == 0 {
+			return fmt.Errorf("target.proxy: invalid port in %q", t.Proxy)
+		}
 	}
-	for i, ms := range []uint64{c.Prepare.RequestTimeoutMS, c.Prepare.ReadyTimeoutMS} {
+	if net.ParseIP(t.ExpectedServerIP) == nil {
+		return fmt.Errorf("target.expected_server_ip: expected an IP address, actual %q", t.ExpectedServerIP)
+	}
+	return nil
+}
+
+func (o Options) validate() error {
+	if o.Concurrency == 0 || o.Concurrency > uint64(^uint(0)>>1) || o.Concurrency > contract.MaxSafeInteger {
+		return fmt.Errorf("prepare.concurrency: expected a positive JavaScript-safe native integer, actual %d", o.Concurrency)
+	}
+	for i, ms := range []uint64{o.RequestTimeoutMS, o.ReadyTimeoutMS} {
 		if ms == 0 || ms > uint64((1<<63-1)/int64(time.Millisecond)) {
 			return fmt.Errorf("prepare.%s: expected positive representable milliseconds, actual %d", []string{"request_timeout_ms", "ready_timeout_ms"}[i], ms)
 		}

@@ -65,23 +65,16 @@ func newClient(c Config) (*http.Client, *http.Transport, error) {
 	return client, transport, nil
 }
 
-func request(ctx context.Context, client *http.Client, c Config, o contract.Object, rangeRequest bool) (*http.Response, context.CancelFunc, error) {
-	ms := c.Prepare.RequestTimeoutMS
-	if rangeRequest {
-		ms = c.Prepare.ReadyTimeoutMS
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(ms)*time.Millisecond)
+func request(ctx context.Context, client *http.Client, o contract.Object, rangeRequest bool) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.URL, nil)
 	if err != nil {
-		cancel()
-		return nil, func() {}, err
+		return nil, err
 	}
 	req.Header = FixedHeaders()
 	if rangeRequest {
 		req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", min(uint64(65536), o.Size)-1))
 	}
-	resp, err := client.Do(req)
-	return resp, cancel, err
+	return client.Do(req)
 }
 
 func responseIdentity(resp *http.Response, c Config) (string, string, error) {
@@ -98,79 +91,61 @@ func responseIdentity(resp *http.Response, c Config) (string, string, error) {
 	return task, server, nil
 }
 
-func fullRead(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult) error {
-	resp, cancel, err := request(ctx, client, c, o, false)
+func fullRead(ctx context.Context, client *http.Client, c Config, o contract.Object, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	resp, err := request(ctx, client, o, false)
 	if err != nil {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET: %w", err))
+		return "", contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET: %w", err))
 	}
-	// The response body is always closed, including failures before body reads.
-	err = readFullResponse(ctx, resp, c, o, r)
+	task, err := readFullResponse(ctx, resp, c, o)
 	closeErr := resp.Body.Close()
 	if err == nil {
 		err = closeErr
 	}
-	return err
+	return task, err
 }
 
-func readFullResponse(ctx context.Context, resp *http.Response, c Config, o contract.Object, r *ObjectResult) error {
+func readFullResponse(ctx context.Context, resp *http.Response, c Config, o contract.Object) (string, error) {
 	if resp.StatusCode != http.StatusOK {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET requires HTTP 200, got %d", resp.StatusCode))
+		return "", contract.Tag(contract.PrepareFailed, fmt.Errorf("full GET requires HTTP 200, got %d", resp.StatusCode))
 	}
-	task, server, err := responseIdentity(resp, c)
-	if task != "" {
-		r.TaskID = &task
-	}
-	if server != "" {
-		r.ServerIP = &server
-	}
+	task, _, err := responseIdentity(resp, c)
 	if err != nil {
-		return err
+		return task, err
 	}
 	hash := sha256.New()
 	n, err := io.CopyBuffer(hash, io.LimitReader(resp.Body, int64(o.Size)+1), make([]byte, 64*1024))
-	count := uint64(n)
-	r.ReceivedBytes = &count
-	digest := hex.EncodeToString(hash.Sum(nil))
-	r.SHA256 = &digest
 	if err != nil {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET after %d bytes: %w", resp.StatusCode, n, err))
+		return task, contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET after %d bytes: %w", resp.StatusCode, n, err))
 	}
-	if count != o.Size || digest != o.SHA256 {
-		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET body mismatch: received %d, expected %d bytes; SHA-256 %s", resp.StatusCode, count, o.Size, digest))
+	digest := hex.EncodeToString(hash.Sum(nil))
+	if uint64(n) != o.Size || digest != o.SHA256 {
+		return task, contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d full GET body mismatch: received %d, expected %d bytes; SHA-256 expected %s, actual %s", resp.StatusCode, n, o.Size, o.SHA256, digest))
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	now := timestamp()
-	r.FullReadCompletedAt = &now
-	return nil
+	return task, ctx.Err()
 }
 
-func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult, stage string) error {
-	// All attempts, body reads and backoffs share one budget. A slow first
-	// request must not multiply the configured timeout by the attempt count.
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Prepare.ReadyTimeoutMS)*time.Millisecond)
+func rangeCheck(ctx context.Context, client *http.Client, c Config, o contract.Object, task string, timeout time.Duration) error {
+	// Attempts, reads and backoffs share one budget.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	delays := [...]time.Duration{100 * time.Millisecond, 500 * time.Millisecond}
 	for attempt := 1; ; attempt++ {
-		r.FinishedCheckAt = nil
 		if err := ctx.Err(); err != nil {
 			return contract.Tag(Unverified, err)
 		}
-		err := rangeCheckOnce(ctx, client, c, o, r)
+		err := rangeCheckOnce(ctx, client, c, o, task)
 		if err == nil {
-			if attempt > 1 {
-				log.Printf("%s object=%d succeeded after %d attempts", stage, o.ID, attempt)
-			}
 			return nil
 		}
-		r.FinishedCheckAt = nil
-		log.Printf("%s object=%d attempt=%d/3 failed: %v", stage, o.ID, attempt, err)
-		if ctx.Err() != nil || attempt > len(delays) || !retryableRangeError(err) {
+		log.Printf("range_check object_id=%d task_id=%s attempt=%d/3 failed: %v", o.ID, task, attempt, err)
+		if ctx.Err() != nil {
+			return contract.Tag(Unverified, fmt.Errorf("range check stopped after %d attempts (%v): %w", attempt, err, ctx.Err()))
+		}
+		if attempt > len(delays) || !retryableRangeError(err) {
 			return fmt.Errorf("range check stopped after %d attempts: %w", attempt, err)
 		}
-		log.Printf("%s object=%d retrying in %s", stage, o.ID, delays[attempt-1])
 		timer := time.NewTimer(delays[attempt-1])
 		select {
 		case <-ctx.Done():
@@ -194,13 +169,12 @@ func retryableRangeError(err error) bool {
 		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
 }
 
-func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contract.Object, r *ObjectResult) error {
-	resp, cancel, err := request(ctx, client, c, o, true)
-	defer cancel()
+func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contract.Object, task string) error {
+	resp, err := request(ctx, client, o, true)
 	if err != nil {
 		return contract.Tag(Unverified, fmt.Errorf("range check: %w", err))
 	}
-	err = readProbe(ctx, resp, c, o, r)
+	err = readProbe(ctx, resp, c, o, task)
 	closeErr := resp.Body.Close()
 	if err == nil {
 		err = contract.Tag(Unverified, closeErr)
@@ -208,7 +182,7 @@ func rangeCheckOnce(ctx context.Context, client *http.Client, c Config, o contra
 	return err
 }
 
-func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Object, r *ObjectResult) error {
+func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Object, expectedTask string) error {
 	if resp.StatusCode != http.StatusPartialContent {
 		return contract.Tag(contract.PrepareFailed, fmt.Errorf("range check requires HTTP 206, got %d", resp.StatusCode))
 	}
@@ -216,7 +190,7 @@ func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Ob
 	if err != nil {
 		return err
 	}
-	if r.TaskID == nil || task != *r.TaskID {
+	if task != expectedTask {
 		return contract.Tag(contract.PrepareFailed, fmt.Errorf("HTTP %d: task identity changed during range check", resp.StatusCode))
 	}
 	size := min(uint64(65536), o.Size)
@@ -240,8 +214,6 @@ func readProbe(ctx context.Context, resp *http.Response, c Config, o contract.Ob
 	if err := ctx.Err(); err != nil {
 		return contract.Tag(Unverified, err)
 	}
-	now := timestamp()
-	r.FinishedCheckAt = &now
 	return nil
 }
 

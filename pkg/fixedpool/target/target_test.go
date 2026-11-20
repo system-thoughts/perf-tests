@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
@@ -51,8 +53,7 @@ func TestPreparationReusesHTTPConnection(t *testing.T) {
 	}))
 	defer proxy.Close()
 	config := Config{
-		Target:  Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"},
-		Prepare: Options{RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000},
+		Target: Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"},
 	}
 	client, transport, err := newClient(config)
 	if err != nil {
@@ -60,11 +61,11 @@ func TestPreparationReusesHTTPConnection(t *testing.T) {
 	}
 	defer transport.CloseIdleConnections()
 	object := contract.Object{ID: 0, Size: 4, SHA256: contract.Digest(body), URL: "http://object.test/0"}
-	var result ObjectResult
-	if err := fullRead(context.Background(), client, config, object, &result); err != nil {
+	task, err := fullRead(context.Background(), client, config, object, 2*time.Second)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rangeCheck(context.Background(), client, config, object, &result, "range_check"); err != nil {
+	if err := rangeCheck(context.Background(), client, config, object, task, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	first, second := <-requests, <-requests
@@ -110,14 +111,13 @@ func TestFullResponseIntegrity(t *testing.T) {
 			case "cancelled":
 				cancel()
 			}
-			var result ObjectResult
-			err := readFullResponse(ctx, resp, config, object, &result)
+			task, err := readFullResponse(ctx, resp, config, object)
 			if name == "valid" {
-				if err != nil || result.FullReadCompletedAt == nil || result.ReceivedBytes == nil || *result.ReceivedBytes != 3 || result.SHA256 == nil || *result.SHA256 != object.SHA256 {
-					t.Fatalf("result=%+v err=%v", result, err)
+				if err != nil || task != "object-task" {
+					t.Fatalf("task=%q err=%v", task, err)
 				}
-			} else if err == nil || result.FullReadCompletedAt != nil {
-				t.Fatalf("invalid response completed: %+v %v", result, err)
+			} else if err == nil {
+				t.Fatalf("invalid response completed: %q %v", task, err)
 			}
 		})
 	}
@@ -161,15 +161,13 @@ func TestRangeResponseIntegrity(t *testing.T) {
 			case "bytes":
 				resp.Body = io.NopCloser(strings.NewReader("xxxx"))
 			}
-			task := "object-task"
-			result := ObjectResult{TaskID: &task}
-			err := readProbe(ctx, resp, config, object, &result)
+			err := readProbe(ctx, resp, config, object, "object-task")
 			if name == "valid" || name == "missing-marker" || name == "false-marker" || name == "ambiguous-marker" {
-				if err != nil || result.FinishedCheckAt == nil {
-					t.Fatalf("%+v %v", result, err)
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else if err == nil || result.FinishedCheckAt != nil {
-				t.Fatalf("invalid completion accepted: %+v %v", result, err)
+			} else if err == nil {
+				t.Fatalf("invalid completion accepted: %v", err)
 			}
 			if name == "bytes-without-marker" && contract.ErrorCode(err) != contract.PrepareFailed {
 				t.Fatalf("body mismatch must remain a data failure, got %v", err)
@@ -182,32 +180,73 @@ func TestRangeResponseIntegrity(t *testing.T) {
 }
 
 func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		statuses []string
-		cancel   bool
-		want     string
-	}{
-		{"ready", []string{StatusReady, StatusReady}, false, StatusReady},
-		{"unfinished", []string{StatusReady, StatusUnverified}, false, StatusUnverified},
-		{"failed", []string{StatusReady, StatusFailed}, false, StatusFailed},
-		{"failed-before-unfinished", []string{StatusFailed, StatusUnverified}, false, StatusFailed},
-		{"cancelled", []string{StatusReady, StatusReady}, true, StatusUnverified},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, mode := range []string{"ready", "bad-second-object", "cancelled", "conflict"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			bodies := [][]byte{{0x4a, 0x8d, 0x62, 0x96}, {0xaa, 0x79, 0x30, 0xca}}
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				i := 0
+				if strings.HasSuffix(req.URL.Path, contract.Digest(bodies[1])) {
+					i = 1
+				}
+				w.Header().Set(taskHeader, fmt.Sprintf("task-%d", i))
+				w.Header().Set(serverHeader, "192.0.2.10")
+				w.Header().Set("Content-Length", "4")
+				if req.Header.Get("Range") != "" {
+					w.Header().Set("Content-Range", "bytes 0-3/4")
+					w.WriteHeader(http.StatusPartialContent)
+				}
+				body := bodies[i]
+				if mode == "bad-second-object" && i == 1 {
+					body = []byte("xxxx")
+				}
+				_, _ = w.Write(body)
+			}))
+			defer proxy.Close()
+			m := contract.Manifest{SchemaVersion: 1, Generator: contract.Generator{Version: contract.ContentAlgorithm, Seed: contract.ContentSeed, BlockBytes: 16}, ObjectSize: 4, ObjectCount: 2, BaseURL: "http://objects.test", Objects: []contract.Object{}}
+			for i, body := range bodies {
+				sha := contract.Digest(body)
+				m.Objects = append(m.Objects, contract.Object{ID: uint64(i), Size: 4, SHA256: sha, RelativePath: "objects/sha256/" + sha, URL: "http://objects.test/objects/sha256/" + sha})
+			}
+			raw, _ := contract.Encode(m)
+			manifest := filepath.Join(dir, "manifest.json")
+			if err := os.WriteFile(manifest, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(dir, "target.yaml")
+			if err := os.WriteFile(config, []byte(fmt.Sprintf("schema_version: 1\ntarget:\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n", proxy.URL)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(dir, "out")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			if test.cancel {
+			record := filepath.Join(out, "target-preparation.json")
+			if mode == "cancelled" {
 				cancel()
 			}
-			objects := ObjectResults{}
-			for id, status := range test.statuses {
-				objects.Objects = append(objects.Objects, ObjectResult{ObjectID: uint64(id), Status: status})
+			if mode == "conflict" {
+				if err := os.Mkdir(out, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(record, []byte("existing"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
-			result := NewResult()
-			err := summarize(ctx, &objects, &result)
-			if result.Status != test.want || (err == nil) != (test.want == StatusReady) || (len(result.Errors) == 0) != (test.want == StatusReady) {
-				t.Fatalf("result=%+v err=%v", result, err)
+			result, err := Prepare(ctx, Spec{Manifest: manifest, TargetConfig: config, Out: out, Options: Options{Concurrency: 1, RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000}})
+			data, readErr := os.ReadFile(record)
+			if mode == "ready" {
+				if err != nil || readErr != nil || result.Status != StatusReady {
+					t.Fatalf("%+v %v %v", result, err, readErr)
+				}
+				if _, err := os.Stat(filepath.Join(out, "target-object-results.json")); !os.IsNotExist(err) {
+					t.Fatalf("unexpected object report: %v", err)
+				}
+			} else if mode == "conflict" {
+				if err == nil || string(data) != "existing" {
+					t.Fatalf("overwrote existing record: %q %v", data, err)
+				}
+			} else if err == nil || !os.IsNotExist(readErr) || result.Status == StatusReady {
+				t.Fatalf("failed preparation published ready: %+v %v %v", result, err, readErr)
 			}
 		})
 	}
@@ -228,67 +267,77 @@ func TestRangeTransportRecovery(t *testing.T) {
 	)
 	for _, name := range []string{reset, truncated, persistent, budgetName, cancelled, backoff, "status", "identity", "range", "bytes", "unsupported", "permanent-transport"} {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}, Prepare: Options{ReadyTimeoutMS: 2000}}
-			if name == budgetName {
-				config.Prepare.ReadyTimeoutMS = 20
-			}
-			attempts, wantAttempts := 0, 1
-			switch name {
-			case reset, truncated:
-				wantAttempts = 2
-			case persistent:
-				wantAttempts = 3
-			}
-			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				attempts++
-				if req.Header.Get("Range") != "bytes=0-3" {
-					t.Fatalf("recovery changed the request: %v", req.Header)
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				config := Config{Target: Target{ExpectedServerIP: "192.0.2.10"}}
+				budget := 2 * time.Second
+				if name == budgetName {
+					budget = 20 * time.Millisecond
 				}
-				if name == cancelled {
-					cancel()
-				}
-				if name == backoff {
-					time.AfterFunc(10*time.Millisecond, cancel)
-				}
-				if name == persistent || name == budgetName || name == cancelled || name == backoff || (name == reset && attempts == 1) {
-					return nil, syscall.ECONNRESET
-				}
-				if name == "permanent-transport" {
-					return nil, errors.New("unsupported transport configuration")
-				}
-				resp := response(http.StatusPartialContent, []byte{0x4a, 0x8d, 0x62, 0x96})
-				resp.Header.Set("Content-Range", "bytes 0-3/4")
+				attempts, wantAttempts := 0, 1
 				switch name {
-				case truncated:
-					if attempts == 1 {
-						resp.Body = io.NopCloser(errorReader{})
-					}
-				case "status":
-					resp.StatusCode = http.StatusServiceUnavailable
-				case "identity":
-					resp.Header.Set(taskHeader, "another-task")
-				case "range":
-					resp.Header.Set("Content-Range", "bytes 1-4/4")
-				case "bytes":
-					resp.Body = io.NopCloser(strings.NewReader("xxxx"))
-				case "unsupported":
-					resp.Header.Del(taskHeader)
+				case reset, truncated:
+					wantAttempts = 2
+				case persistent:
+					wantAttempts = 3
 				}
-				return resp, nil
-			})}
-			task := "object-task"
-			result := ObjectResult{TaskID: &task}
-			started := time.Now()
-			err := rangeCheck(ctx, client, config, contract.Object{ID: 0, Size: 4, URL: "http://object.test/0"}, &result, "range_check")
-			success := name == reset || name == truncated
-			if attempts != wantAttempts || (err == nil) != success || (result.FinishedCheckAt != nil) != success {
-				t.Fatalf("attempts=%d want=%d result=%+v err=%v", attempts, wantAttempts, result, err)
-			}
-			if (name == budgetName || name == cancelled || name == backoff) && time.Since(started) > 500*time.Millisecond {
-				t.Fatal("cancellation or shared budget did not interrupt retry backoff")
-			}
+				client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					attempts++
+					if req.Header.Get("Range") != "bytes=0-3" {
+						t.Fatalf("recovery changed the request: %v", req.Header)
+					}
+					if name == cancelled {
+						cancel()
+					}
+					if name == backoff {
+						time.AfterFunc(10*time.Millisecond, cancel)
+					}
+					if name == persistent || name == budgetName || name == cancelled || name == backoff || (name == reset && attempts == 1) {
+						return nil, syscall.ECONNRESET
+					}
+					if name == "permanent-transport" {
+						return nil, errors.New("unsupported transport configuration")
+					}
+					resp := response(http.StatusPartialContent, []byte{0x4a, 0x8d, 0x62, 0x96})
+					resp.Header.Set("Content-Range", "bytes 0-3/4")
+					switch name {
+					case truncated:
+						if attempts == 1 {
+							resp.Body = io.NopCloser(errorReader{})
+						}
+					case "status":
+						resp.StatusCode = http.StatusServiceUnavailable
+					case "identity":
+						resp.Header.Set(taskHeader, "another-task")
+					case "range":
+						resp.Header.Set("Content-Range", "bytes 1-4/4")
+					case "bytes":
+						resp.Body = io.NopCloser(strings.NewReader("xxxx"))
+					case "unsupported":
+						resp.Header.Del(taskHeader)
+					}
+					return resp, nil
+				})}
+				started := time.Now()
+				err := rangeCheck(ctx, client, config, contract.Object{ID: 0, Size: 4, URL: "http://object.test/0"}, "object-task", budget)
+				success := name == reset || name == truncated
+				if attempts != wantAttempts || (err == nil) != success {
+					t.Fatalf("attempts=%d want=%d err=%v", attempts, wantAttempts, err)
+				}
+				if name == budgetName || name == cancelled || name == backoff {
+					want := context.Canceled
+					if name == budgetName {
+						want = context.DeadlineExceeded
+					}
+					if !errors.Is(err, want) || attempts != 1 {
+						t.Fatalf("budget/cancellation lost: attempts=%d err=%v", attempts, err)
+					}
+				}
+				if (name == budgetName || name == backoff) && time.Since(started) >= 100*time.Millisecond {
+					t.Fatal("cancellation did not interrupt the first 100ms backoff")
+				}
+			})
 		})
 	}
 }
@@ -298,33 +347,27 @@ type errorReader struct{}
 func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestConfigDefaultsAndBusinessConstraints(t *testing.T) {
-	dir := t.TempDir()
+	path := filepath.Join(t.TempDir(), "target.yaml")
 	original := "schema_version: 1\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
-	path := filepath.Join(dir, "target.yaml")
-	for _, test := range []struct{ name, suffix string }{
-		{"defaults", ""}, {"custom", "prepare:\n  concurrency: 2\n  request_timeout_ms: 1000\n  ready_timeout_ms: 200\n"}, {"old-rules", "proxy_rules_ref: {}\n"}, {"zero-concurrency", "prepare:\n  concurrency: 0\n"},
-		{"zero-ready-timeout", "prepare:\n  ready_timeout_ms: 0\n"},
+	for _, test := range []struct {
+		name, raw string
+		valid     bool
+	}{
+		{"valid", original, true},
+		{"invalid-proxy", strings.ReplaceAll(original, "http://seed.test:4001", "abc"), false},
+		{"invalid-server", strings.ReplaceAll(original, "192.0.2.10", "bad"), false},
+		{"unknown", original + "prepare: {}\n", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := os.WriteFile(path, []byte(original+test.suffix), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(test.raw), 0600); err != nil {
 				t.Fatal(err)
 			}
-			config, digest, err := ReadConfig(path)
-			if test.name == "defaults" || test.name == "custom" {
-				if err != nil || config.Prepare.Concurrency == 0 || config.Prepare.RequestTimeoutMS == 0 || config.Prepare.ReadyTimeoutMS == 0 {
-					t.Fatalf("%+v %v", config, err)
-				}
-				if digest != contract.Digest([]byte(original+test.suffix)) {
-					t.Fatal("config digest does not match the original YAML bytes")
-				}
-				if test.name == "custom" {
-					want := Options{Concurrency: 2, RequestTimeoutMS: 1000, ReadyTimeoutMS: 200}
-					if config.Prepare != want {
-						t.Fatalf("custom options=%+v, want %+v", config.Prepare, want)
-					}
-				}
-			} else if err == nil || digest != "" {
-				t.Fatal("accepted invalid business constraint")
+			_, digest, err := ReadConfig(path)
+			if (err == nil) != test.valid {
+				t.Fatal(err)
+			}
+			if test.valid && digest != contract.Digest([]byte(test.raw)) {
+				t.Fatal("wrong config digest")
 			}
 		})
 	}

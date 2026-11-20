@@ -17,78 +17,23 @@
 package worker
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/target"
 )
 
-// CheckPreparation checks the published ready record and evidence integrity.
-// Full object semantics are established by preparation, not re-audited by each worker.
-func CheckPreparation(raw []byte, name string, m contract.Manifest, manifestID string, c target.Config) error {
+// CheckPreparation consumes the selected success record, not live cache state.
+func CheckPreparation(raw []byte, manifestID string) (target.Target, error) {
 	var r target.Result
 	if err := contract.DecodeRecord(raw, &r); err != nil {
-		return fmt.Errorf("TARGET_PREPARATION: %w", err)
+		return r.Target, err
 	}
-	if r.SchemaVersion != 1 || r.PreparationID == "" || r.Status != target.StatusReady || len(r.Errors) != 0 {
-		return fmt.Errorf("target-preparation requires schema=1, preparation_id, status=ready and no errors; actual schema=%d id=%q status=%q errors=%d", r.SchemaVersion, r.PreparationID, r.Status, len(r.Errors))
+	if r.SchemaVersion != 1 || r.Status != target.StatusReady {
+		return r.Target, fmt.Errorf("schema_version/status: expected 1/ready, actual %d/%q", r.SchemaVersion, r.Status)
 	}
-	if r.ManifestSHA256 == nil || *r.ManifestSHA256 != manifestID {
-		actual := "<missing>"
-		if r.ManifestSHA256 != nil {
-			actual = *r.ManifestSHA256
-		}
-		return fmt.Errorf("target-preparation manifest_sha256 mismatch: expected %s, actual %s", manifestID, actual)
+	if r.ManifestSHA256 != manifestID {
+		return r.Target, fmt.Errorf("manifest_sha256: expected %s, actual %s", manifestID, r.ManifestSHA256)
 	}
-	if r.PieceStrategy != "auto" || r.Method != target.Method {
-		return fmt.Errorf("target-preparation piece_strategy/method: expected auto/%s, actual %s/%s", target.Method, r.PieceStrategy, r.Method)
-	}
-	if r.Target == nil || r.Target.Proxy != c.Target.Proxy || r.Target.ExpectedServerIP != c.Target.ExpectedServerIP {
-		return fmt.Errorf("target-preparation target.proxy/expected_server_ip mismatch: expected %s/%s, actual %+v", c.Target.Proxy, c.Target.ExpectedServerIP, r.Target)
-	}
-	if r.ObjectCount == nil {
-		return fmt.Errorf("target-preparation object_count: expected %d, actual null", m.ObjectCount)
-	}
-	if *r.ObjectCount != m.ObjectCount {
-		return fmt.Errorf("target-preparation object_count: expected %d, actual %d", m.ObjectCount, *r.ObjectCount)
-	}
-	if r.Prepare == nil {
-		return fmt.Errorf("target-preparation prepare: expected preparation options, actual null")
-	}
-	for i, value := range []uint64{r.Prepare.Concurrency, r.Prepare.RequestTimeoutMS, r.Prepare.ReadyTimeoutMS} {
-		if value == 0 {
-			return fmt.Errorf("target-preparation prepare.%s: expected a positive value, actual 0", []string{"concurrency", "request_timeout_ms", "ready_timeout_ms"}[i])
-		}
-	}
-	if r.EvidenceFile == nil || r.EvidenceFile.Path != "target-object-results.json" || !contract.ValidDigest(r.EvidenceFile.SHA256) {
-		return fmt.Errorf("target-preparation evidence_file: expected path target-object-results.json and a lowercase SHA-256, actual %+v", r.EvidenceFile)
-	}
-	digest, err := evidenceDigest(filepath.Join(filepath.Dir(name), r.EvidenceFile.Path))
-	if err != nil {
-		return contract.Input("TARGET_PREPARATION.evidence_file", filepath.Join(filepath.Dir(name), r.EvidenceFile.Path), err)
-	}
-	if digest != r.EvidenceFile.SHA256 {
-		return contract.Input("TARGET_PREPARATION.evidence_file", filepath.Join(filepath.Dir(name), r.EvidenceFile.Path), fmt.Errorf("sha256 mismatch: expected %s, actual %s", r.EvidenceFile.SHA256, digest))
-	}
-	return nil
-}
-
-// Hash as a stream: ready evidence can be large, and workers do not parse it.
-func evidenceDigest(name string) (digest string, err error) {
-	f, err := os.Open(name)
-	if err != nil {
-		return "", err
-	}
-	defer func() { err = errors.Join(err, f.Close()) }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return r.Target, r.Target.Validate()
 }

@@ -37,7 +37,6 @@ type RunSpec struct {
 	SchemaVersion     int               `json:"schema_version"`
 	RunID             string            `json:"run_id"`
 	Manifest          contract.FileRef  `json:"manifest"`
-	TargetConfig      contract.FileRef  `json:"target_config"`
 	TargetPreparation contract.FileRef  `json:"target_preparation"`
 	Plan              contract.FileRef  `json:"plan"`
 	Target            target.Target     `json:"target"`

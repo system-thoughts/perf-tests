@@ -43,9 +43,6 @@ spec:
         - name: inputs
           mountPath: /inputs
           readOnly: true
-        - name: target
-          mountPath: /config
-          readOnly: true
         - name: tmp
           mountPath: /tmp
         imagePullPolicy: IfNotPresent
@@ -56,8 +53,6 @@ spec:
           value: /inputs/plan/request-plan.json
         - name: TARGET_PREPARATION
           value: /inputs/preparation/target-preparation.json
-        - name: TARGET_CONFIG
-          value: /config/target-config.yaml
         - name: RATE
           value: '10'
         - name: DURATION
@@ -71,8 +66,5 @@ spec:
         persistentVolumeClaim:
           claimName: fixed-pool-inputs
           readOnly: true
-      - name: target
-        configMap:
-          name: fixed-pool-target
       - name: tmp
         emptyDir: {}

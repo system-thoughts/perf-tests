@@ -4,5 +4,7 @@ ARG TARGETARCH
 
 COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-prepare /usr/local/bin/
 
+USER 1000:1000
+
 # A Job selects the preparation command explicitly; no daemon or orchestrator.
 CMD ["/usr/local/bin/proxy-bench-prepare", "--help"]

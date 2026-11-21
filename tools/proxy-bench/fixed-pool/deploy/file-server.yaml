@@ -31,8 +31,6 @@ spec:
     spec:
       # Optional placement must respect the source PVC topology.
       # nodeSelector: {kubernetes.io/hostname: chosen-node}
-      securityContext:
-        fsGroup: 1000
       # Keep selectors, ports and the object mount aligned; adapt storage/resources.
       containers:
       - name: file-server

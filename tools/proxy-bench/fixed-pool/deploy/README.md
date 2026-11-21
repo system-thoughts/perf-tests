@@ -25,3 +25,7 @@ allowed. Job deletion does not remove outputs from a PVC. stdout/stderr go to Po
 logs, while necessary artifacts remain on their
 volumes. Save logs only when needed. Existing resource names are one-deployment
 examples; additional deployments use operator-selected names or namespaces.
+
+Tools run as image UID/GID 1000; the worker inherits the k6 image non-root user.
+The four Jobs retain `fsGroup: 1000` for mounted PVC access. FileServer reads
+generated 0755 directories and 0444 files and does not need a volume ownership change.

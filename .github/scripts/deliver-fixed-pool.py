@@ -277,7 +277,14 @@ This development publication is not ARM-native, load-generator capacity or scale
     if release is None:
         gh('release', 'create', VERSION, '--target', SHA, '--title', VERSION,
            '--draft', '--prerelease', '--notes-file', str(note))
-        release = find_release()
+        # A newly created draft may not appear in release queries immediately.
+        for attempt in range(5):
+            release = find_release()
+            if release is not None:
+                break
+            time.sleep(1)
+        if release is None:
+            raise RuntimeError('Created draft is not visible yet; rerun to resume this delivery')
     for path in assets:
         previous = next((a for a in release['assets'] if a['name'] == path.name), None)
         if previous:

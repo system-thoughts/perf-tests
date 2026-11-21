@@ -219,6 +219,16 @@ def package(images):
     for folder in ('deploy', 'examples'):
         shutil.copytree(SOURCE / 'tools/proxy-bench/fixed-pool' / folder, bundle / folder,
                         ignore=shutil.ignore_patterns('*.md'))
+    for path in (bundle / 'deploy').rglob('*.yaml'):
+        original = path.read_text()
+        material = original
+        for role, image in IMAGES.items():
+            material = material.replace(f'ghcr.io/{REPO}/{image}:replace-with-build-tag',
+                                        f'{REGISTRY}/{image}@{images[role]["digest"]}')
+        if 'replace-with-build-tag' in material:
+            raise RuntimeError(f'unresolved image placeholder in {path}')
+        if material != original:
+            path.write_text(material)
     shutil.copyfile(existing, bundle / existing.name)
     archive = DIST / f'fixed-pool-deploy-{VERSION}.tar.gz'
     epoch = int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', SHA], cwd=SOURCE, text=True))
@@ -257,7 +267,7 @@ Source: https://github.com/{REPO}/commit/{SHA}
 The default tag selects linux/amd64 or linux/arm64. Append `-amd64` or `-arm64` to select a specific architecture.
 Use `build-info.txt` for exact image digests and the fixed external file-server dependency.
 Verify the attached files with `sha256sum -c SHA256SUMS`, then extract `fixed-pool-deploy-{VERSION}.tar.gz`.
-The archive contains deployment material from exactly this source commit. Keep its tools, worker and deployment files together.
+The archive contains deployment material from this source commit. Modern YAML image placeholders are resolved to the Tools/Worker digests in build-info.txt. Keep these files together.
 Use this branch's existing preparation commands and fixed-pool Job entrypoint; branch layouts are intentionally preserved.
 
 [Source usage instructions](https://github.com/{REPO}/blob/{SHA}/tools/proxy-bench/README.md)

@@ -365,6 +365,7 @@ func TestTargetConfigParsingAndAddresses(t *testing.T) {
 		{"valid", original, true},
 		{"valid-alias", strings.ReplaceAll(original, "base_url: http://objects.test", "base_url: &url http://objects.test") + "  ref: *url\n", true},
 		{"invalid-proxy", strings.ReplaceAll(original, "http://seed.test:4001", "abc"), false},
+		{"missing-proxy-host", strings.ReplaceAll(original, "http://seed.test:4001", "http://:4001"), false},
 		{"invalid-server", strings.ReplaceAll(original, "192.0.2.10", "bad"), false},
 		{"unknown", original + "prepare: {}\n", false},
 		{"duplicate", original + "schema_version: 1\n", false},

@@ -18,6 +18,7 @@ package command
 
 import (
 	"context"
+
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
 )
 

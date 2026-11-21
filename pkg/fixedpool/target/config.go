@@ -100,7 +100,7 @@ func validateConfig(c Config) error {
 
 func (t Target) Validate() error {
 	u, err := url.Parse(t.Proxy)
-	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(t.Proxy, "#") {
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(t.Proxy, "#") {
 		return fmt.Errorf("target.proxy: expected an HTTP proxy origin without credentials or path/query/fragment; actual %q", t.Proxy)
 	}
 	if u.Port() != "" {

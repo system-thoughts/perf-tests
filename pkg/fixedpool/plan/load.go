@@ -33,13 +33,7 @@ import (
 
 // LoadWorker validates common metadata and only the selected shard's bytes.
 // Other workers' files need not be mounted in this process.
-func LoadWorker(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, worker uint64) (contract.Plan, []byte, uint64, error) {
-	return loadSelected(ctx, name, manifest, manifestSHA, nil, &worker)
-}
-func load(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32) (contract.Plan, []byte, uint64, error) {
-	return loadSelected(ctx, name, manifest, manifestSHA, expected, nil)
-}
-func loadSelected(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32, selected *uint64) (p contract.Plan, raw []byte, actual uint64, err error) {
+func LoadWorker(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, selected uint64) (p contract.Plan, raw []byte, err error) {
 	defer func() {
 		if err != nil {
 			err = contract.Input("PLAN", name, err)
@@ -47,59 +41,51 @@ func loadSelected(ctx context.Context, name string, manifest contract.Manifest, 
 	}()
 	raw, err = os.ReadFile(name)
 	if err != nil {
-		return p, nil, 0, err
+		return p, nil, err
 	}
 	if err := contract.Decode(raw, &p); err != nil {
-		return p, nil, 0, err
+		return p, nil, err
 	}
 	if p.SchemaVersion != 1 || p.Algorithm != contract.OrderAlgorithm || p.Seed != contract.OrderSeed || p.ManifestSHA256 != manifestSHA {
-		return p, nil, 0, fmt.Errorf("schema_version/algorithm/seed/manifest_sha256: expected 1/%s/%s/%s, actual %d/%s/%s/%s", contract.OrderAlgorithm, contract.OrderSeed, manifestSHA, p.SchemaVersion, p.Algorithm, p.Seed, p.ManifestSHA256)
+		return p, nil, fmt.Errorf("schema_version/algorithm/seed/manifest_sha256: expected 1/%s/%s/%s, actual %d/%s/%s/%s", contract.OrderAlgorithm, contract.OrderSeed, manifestSHA, p.SchemaVersion, p.Algorithm, p.Seed, p.ManifestSHA256)
 	}
 	perObject, total, err := Geometry(manifest.ObjectSize, manifest.ObjectCount, p.RangeBytes, p.WorkerCount)
 	if err != nil {
-		return p, nil, 0, err
+		return p, nil, err
 	}
 	if p.RegionsPerObject != perObject || p.RegionCount != total || uint64(len(p.Shards)) != p.WorkerCount {
-		return p, nil, 0, fmt.Errorf("region metadata mismatch: expected regions_per_object=%d region_count=%d worker_count=%d, actual %d/%d/%d", perObject, total, p.WorkerCount, p.RegionsPerObject, p.RegionCount, len(p.Shards))
+		return p, nil, fmt.Errorf("region metadata mismatch: expected regions_per_object=%d region_count=%d worker_count=%d, actual %d/%d/%d", perObject, total, p.WorkerCount, p.RegionsPerObject, p.RegionCount, len(p.Shards))
 	}
-	if selected != nil && *selected >= p.WorkerCount {
-		return p, nil, 0, fmt.Errorf("WORKER_ID %d outside worker_count %d", *selected, p.WorkerCount)
+	if selected >= p.WorkerCount {
+		return p, nil, fmt.Errorf("WORKER_ID %d outside worker_count %d", selected, p.WorkerCount)
 	}
 	directory := filepath.Dir(name)
-	actual = uint64(len(raw))
-	// Only publication supplies the producer's permutation. Consumer and worker
-	// startup check artifact integrity without repeating the generation algorithm.
-	var seen []byte
-	if expected != nil {
-		seen = make([]byte, int((total+7)/8))
-	}
 	for worker, shard := range p.Shards {
 		if shard.WorkerID != uint64(worker) || shard.RegionCount != ShardCount(total, p.WorkerCount, uint64(worker)) || shard.Path != "shards/"+strconv.Itoa(worker)+".json" || !contract.ValidDigest(shard.SHA256) {
-			return p, nil, 0, fmt.Errorf("shards[%d] metadata: expected worker_id=%d region_count=%d path=%q and a lowercase SHA-256, actual %+v", worker, worker, ShardCount(total, p.WorkerCount, uint64(worker)), "shards/"+strconv.Itoa(worker)+".json", shard)
+			return p, nil, fmt.Errorf("shards[%d] metadata: expected worker_id=%d region_count=%d path=%q and a lowercase SHA-256, actual %+v", worker, worker, ShardCount(total, p.WorkerCount, uint64(worker)), "shards/"+strconv.Itoa(worker)+".json", shard)
 		}
-		if selected != nil && *selected != uint64(worker) {
+		if selected != uint64(worker) {
 			continue
 		}
-		length, err := checkShard(ctx, filepath.Join(directory, filepath.FromSlash(shard.Path)), shard, total, seen, expected, p.WorkerCount)
+		err := checkShard(ctx, filepath.Join(directory, filepath.FromSlash(shard.Path)), shard, total)
 		if err != nil {
-			return p, nil, 0, contract.Input(fmt.Sprintf("PLAN.shards[%d]", worker), filepath.Join(directory, filepath.FromSlash(shard.Path)), err)
+			return p, nil, contract.Input(fmt.Sprintf("PLAN.shards[%d]", worker), filepath.Join(directory, filepath.FromSlash(shard.Path)), err)
 		}
-		actual += length
 	}
-	return p, raw, actual, nil
+	return p, raw, nil
 }
 
-func checkShard(ctx context.Context, name string, shard contract.Shard, total uint64, seen []byte, expected []uint32, workers uint64) (length uint64, err error) {
+func checkShard(ctx context.Context, name string, shard contract.Shard, total uint64) (err error) {
 	info, err := os.Lstat(name)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("shard must be a regular file")
+		return fmt.Errorf("shard must be a regular file")
 	}
 	f, err := os.Open(name)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
 	hash := sha256.New()
@@ -107,48 +93,38 @@ func checkShard(ctx context.Context, name string, shard contract.Shard, total ui
 	decoder.UseNumber()
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('[') {
-		return 0, fmt.Errorf("expected shard JSON array")
+		return fmt.Errorf("expected shard JSON array")
 	}
 	var count uint64
 	for decoder.More() {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return err
 		}
 		token, err := decoder.Token()
 		if err != nil {
-			return 0, err
+			return err
 		}
 		number, ok := token.(json.Number)
 		if !ok {
-			return 0, fmt.Errorf("region must be an integer")
+			return fmt.Errorf("region must be an integer")
 		}
 		g, err := strconv.ParseUint(string(number), 10, 32)
 		if err != nil || g >= total {
-			return 0, fmt.Errorf("region[%d]: expected integer in [0,%d), actual %s", count, total, number)
+			return fmt.Errorf("region[%d]: expected integer in [0,%d), actual %s", count, total, number)
 		}
 		if count >= shard.RegionCount {
-			return 0, fmt.Errorf("region[%d]: unexpected extra entry; expected %d regions", count, shard.RegionCount)
-		}
-		if expected != nil && uint64(expected[shard.WorkerID+count*workers]) != g {
-			return 0, fmt.Errorf("region %d violates fixed shard order or membership", g)
-		}
-		if seen != nil {
-			mask := byte(1 << (g % 8))
-			if seen[g/8]&mask != 0 {
-				return 0, fmt.Errorf("duplicate region %d", g)
-			}
-			seen[g/8] |= mask
+			return fmt.Errorf("region[%d]: unexpected extra entry; expected %d regions", count, shard.RegionCount)
 		}
 		count++
 	}
 	if _, err := decoder.Token(); err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return 0, fmt.Errorf("unexpected data after shard array")
+		return fmt.Errorf("unexpected data after shard array")
 	}
 	if count != shard.RegionCount || hex.EncodeToString(hash.Sum(nil)) != shard.SHA256 {
-		return 0, fmt.Errorf("shard count/sha256 mismatch: expected count=%d sha256=%s, actual count=%d sha256=%s", shard.RegionCount, shard.SHA256, count, hex.EncodeToString(hash.Sum(nil)))
+		return fmt.Errorf("shard count/sha256 mismatch: expected count=%d sha256=%s, actual count=%d sha256=%s", shard.RegionCount, shard.SHA256, count, hex.EncodeToString(hash.Sum(nil)))
 	}
-	return uint64(info.Size()), nil
+	return nil
 }

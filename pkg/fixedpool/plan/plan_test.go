@@ -117,7 +117,7 @@ func TestIntegerAndResourceBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if est.MemoryBytes != 67112433 || est.FileBytes != 1050200 {
+	if est.MemoryBytes != 67112432 || est.FileBytes != 1050200 {
 		t.Fatalf("estimate=%+v", est)
 	}
 	if _, err := Estimate(^uint64(0), 8, 3); err == nil {
@@ -135,6 +135,34 @@ func fixture(t *testing.T) (contract.Manifest, []byte, Spec) {
 	return m, data, Spec{Directory: filepath.Join(t.TempDir(), "plans"), RangeBytes: 16, Workers: 3}
 }
 
+func consumerFixture(t *testing.T) (contract.Manifest, []byte, Spec, Result) {
+	t.Helper()
+	m, data, spec := fixture(t)
+	if err := os.MkdirAll(filepath.Join(spec.Directory, "shards"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	shard := []byte("[2,1,4]\n")
+	p := contract.Plan{SchemaVersion: 1, ManifestSHA256: contract.Digest(data), RangeBytes: 16,
+		RegionsPerObject: 4, RegionCount: 8, Algorithm: contract.OrderAlgorithm, Seed: contract.OrderSeed, WorkerCount: 3,
+		Shards: []contract.Shard{
+			{WorkerID: 0, RegionCount: 3, Path: "shards/0.json", SHA256: contract.Digest(shard)},
+			{WorkerID: 1, RegionCount: 3, Path: "shards/1.json", SHA256: strings.Repeat("b", 64)},
+			{WorkerID: 2, RegionCount: 2, Path: "shards/2.json", SHA256: strings.Repeat("c", 64)},
+		},
+	}
+	raw, err := contract.Encode(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(spec.Directory, "request-plan.json")
+	for name, raw := range map[string][]byte{name: raw, filepath.Join(spec.Directory, "shards/0.json"): shard} {
+		if err := os.WriteFile(name, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return m, data, spec, Result{Path: name}
+}
+
 func readFile(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(name)
@@ -145,7 +173,7 @@ func readFile(t *testing.T, name string) []byte {
 }
 
 func TestPlanPublishConflictsAndGeometryChanges(t *testing.T) {
-	m, data, spec := fixture(t)
+	_, data, spec := fixture(t)
 	result, err := Prepare(context.Background(), data, spec)
 	if err != nil {
 		t.Fatal(err)
@@ -154,9 +182,14 @@ func TestPlanPublishConflictsAndGeometryChanges(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0755 {
 		t.Fatalf("published plan directory must permit other container UIDs to read/traverse: %v, %v", info, err)
 	}
-	p, raw, actual, err := load(context.Background(), result.Path, m, contract.Digest(data), nil)
-	if err != nil {
+	raw := readFile(t, result.Path)
+	var p contract.Plan
+	if err := contract.Decode(raw, &p); err != nil {
 		t.Fatal(err)
+	}
+	var actual uint64 = uint64(len(raw))
+	for _, shard := range p.Shards {
+		actual += uint64(len(readFile(t, filepath.Join(filepath.Dir(result.Path), shard.Path))))
 	}
 	if contract.Digest(raw) != result.SHA256 || actual != result.ActualFileBytes {
 		t.Fatal("published result inconsistent")
@@ -267,13 +300,9 @@ func overwrite(t *testing.T, name string, data []byte) {
 }
 
 func TestCorruptPlanRejected(t *testing.T) {
-	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "duplicate region", "out of bounds", "wrong count", "extra region"} {
+	for _, kind := range []string{"seed", "missing zero worker_id", "unknown", "duplicate", "out of bounds", "wrong count", "extra region"} {
 		t.Run(kind, func(t *testing.T) {
-			m, data, spec := fixture(t)
-			result, err := Prepare(context.Background(), data, spec)
-			if err != nil {
-				t.Fatal(err)
-			}
+			m, data, spec, result := consumerFixture(t)
 			body := readFile(t, result.Path)
 			switch kind {
 			case "seed":
@@ -284,12 +313,12 @@ func TestCorruptPlanRejected(t *testing.T) {
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"extra":1,"schema_version":1`), 1))
 			case "duplicate":
 				overwrite(t, result.Path, bytes.Replace(body, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1))
-			case "duplicate region", "out of bounds", "wrong count", "extra region":
+			case "out of bounds", "wrong count", "extra region":
 				var p contract.Plan
 				if err := contract.Decode(body, &p); err != nil {
 					t.Fatal(err)
 				}
-				shard := []byte("[2,2,4]\n")
+				shard := []byte("[2,1,4]\n")
 				if kind == "out of bounds" {
 					shard = []byte("[2,1,8]\n")
 				}
@@ -307,17 +336,7 @@ func TestCorruptPlanRejected(t *testing.T) {
 				}
 				overwrite(t, result.Path, encoded)
 			}
-			if kind == "duplicate region" {
-				expected, err := permutation(context.Background(), 8)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, _, _, err := load(context.Background(), result.Path, m, contract.Digest(data), expected); err == nil {
-					t.Fatal("publication accepted duplicate")
-				}
-				return
-			}
-			_, _, _, err = LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0)
+			_, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0)
 			if err == nil {
 				t.Fatal("corrupt plan accepted")
 			}
@@ -350,13 +369,9 @@ func TestCancelledPlanIsNotPublished(t *testing.T) {
 	}
 }
 
-// Canonical order is proved at publication, not regenerated by consumers.
-func TestPublicationAndConsumptionValidation(t *testing.T) {
-	m, data, spec := fixture(t)
-	result, err := Prepare(context.Background(), data, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
+// Canonical order is tested at generation; consumers validate local integrity.
+func TestConsumptionValidation(t *testing.T) {
+	m, data, _, result := consumerFixture(t)
 	body := readFile(t, result.Path)
 	var p contract.Plan
 	if err := contract.Decode(body, &p); err != nil {
@@ -370,19 +385,12 @@ func TestPublicationAndConsumptionValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	overwrite(t, result.Path, encoded)
-	if _, _, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0); err != nil {
+	if _, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0); err != nil {
 		t.Fatalf("consumer repeated canonical order validation: %v", err)
-	}
-	expected, err := permutation(context.Background(), p.RegionCount)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := load(context.Background(), result.Path, m, contract.Digest(data), expected); err == nil {
-		t.Fatal("publication accepted wrong fixed shard order")
 	}
 	// Changing bytes without updating the published digest remains an error.
 	overwrite(t, filepath.Join(filepath.Dir(result.Path), "shards/0.json"), []byte("[2,1,4]\n"))
-	if _, _, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0); err == nil {
+	if _, _, err := LoadWorker(context.Background(), result.Path, m, contract.Digest(data), 0); err == nil {
 		t.Fatal("consumer ignored shard integrity")
 	}
 }

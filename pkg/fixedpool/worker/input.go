@@ -112,7 +112,7 @@ func PrepareInput(ctx context.Context, e Environment, output string, stdout io.W
 		return err
 	}
 	manifestID := contract.Digest(manifestRaw)
-	p, planRaw, _, err := plan.LoadWorker(ctx, e.Plan, m, manifestID, e.WorkerID)
+	p, planRaw, err := plan.LoadWorker(ctx, e.Plan, m, manifestID, e.WorkerID)
 	if err != nil {
 		return contract.Tag(contract.ContractMismatch, err)
 	}

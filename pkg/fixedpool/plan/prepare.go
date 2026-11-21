@@ -59,7 +59,7 @@ func Estimate(manifestBytes, total, workers uint64) (Estimates, error) {
 	if total == 0 || total > contract.MaxRegions || workers == 0 || workers > total {
 		return Estimates{}, fmt.Errorf("invalid resource geometry")
 	}
-	baseMemory := 4*total + (total+7)/8 + 512*workers + (64 << 20)
+	baseMemory := 4*total + 512*workers + (64 << 20)
 	baseFiles := 11*total + 512*workers + (1 << 20)
 	if manifestBytes > (math.MaxUint64-max(baseMemory, baseFiles))/2 {
 		return Estimates{}, fmt.Errorf("resource estimate overflows uint64")
@@ -111,6 +111,7 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 	if err != nil {
 		return result, err
 	}
+	var actual uint64
 	for worker := uint64(0); worker < spec.Workers; worker++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -120,6 +121,11 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 		if err != nil {
 			return result, err
 		}
+		info, err := os.Stat(filepath.Join(directory, filepath.FromSlash(path)))
+		if err != nil {
+			return result, err
+		}
+		actual += uint64(info.Size())
 		p.Shards[worker] = contract.Shard{WorkerID: worker, RegionCount: ShardCount(total, spec.Workers, worker), Path: path, SHA256: digest}
 	}
 	data, err := contract.Encode(p)
@@ -129,10 +135,7 @@ func Prepare(ctx context.Context, manifestData []byte, spec Spec) (result Result
 	if err := contract.WriteFile(temporary, data); err != nil {
 		return result, err
 	}
-	_, _, actual, err := load(ctx, temporary, manifest, manifestSHA, values)
-	if err != nil {
-		return result, err
-	}
+	actual += uint64(len(data))
 	result.ActualFileBytes = actual
 	if err := ctx.Err(); err != nil {
 		return result, err

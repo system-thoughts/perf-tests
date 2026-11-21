@@ -29,3 +29,11 @@ examples; additional deployments use operator-selected names or namespaces.
 Tools run as image UID/GID 1000; the worker inherits the k6 image non-root user.
 The four Jobs retain `fsGroup: 1000` for mounted PVC access. FileServer reads
 generated 0755 directories and 0444 files and does not need a volume ownership change.
+
+Source names separate roles: Service `fixed-pool-http-service`, StatefulSet
+`fixed-pool-file-server` (Pod `fixed-pool-file-server-0`), PVC `fixed-pool-source`.
+The Service defaults to ClusterIP. Use NodePort when Seed cannot reach Service DNS;
+omitting `nodePort` lets Kubernetes allocate it. Read the assigned port from the
+Service after applying. Existing differently named resources are not renamed by
+apply: keep the PVC, switch source URL and prepare Seed again; explicitly remove
+old Service/StatefulSet only after checking their users. Data and plan stay reusable.

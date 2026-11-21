@@ -29,7 +29,7 @@ spec:
         - --manifest
         - /inputs/dataset-manifest.json
         - --source-base-url
-        - http://fixed-pool-source
+        - http://fixed-pool-http-service
         - --proxy
         - http://seed-client:4001
         - --expected-server-ip

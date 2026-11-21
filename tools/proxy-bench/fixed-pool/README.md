@@ -62,7 +62,7 @@ report file is created. Generation does not need a source URL or running Nginx.
 
 ```bash
 kubectl -n benchmark apply -f deploy/file-server.yaml
-kubectl -n benchmark rollout status statefulset/fixed-pool-source
+kubectl -n benchmark rollout status statefulset/fixed-pool-file-server
 ```
 
 Nginx mounts only `dataset/objects`; URLs are
@@ -163,7 +163,7 @@ proxy-bench-prepare data --root /data/dataset --size 4194304 --count 2
 proxy-bench-prepare plan --manifest /inputs/dataset-manifest.json \
   --range 409600 --workers 1 --out /inputs/plan
 proxy-bench-prepare seed-cache --manifest /inputs/dataset-manifest.json \
-  --source-base-url http://fixed-pool-source --proxy http://seed-client:4001 \
+  --source-base-url http://fixed-pool-http-service --proxy http://seed-client:4001 \
   --expected-server-ip 192.0.2.10 --out /inputs/preparation
 ```
 

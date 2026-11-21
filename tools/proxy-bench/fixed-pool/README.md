@@ -20,10 +20,12 @@ copies have their tools/worker images filled with that build's digests. Reposito
 examples still have image placeholders. The external FileServer is unchanged.
 This development delivery does not change upstream's release process.
 
-**The FP-01–FP-13 candidate described here has not been published or accepted as a
-public delivery. Older releases use different inputs; do not run these instructions
-with their images.** The [candidate VM walkthrough](https://gitcode.com/lvying6/dragonfly-install/blob/fixed_pool_refactor/Nydus全热场景benchamrk用户指南/VM入门-整改候选流程.md)
-separates local rehearsal from the pending public-download check.
+Use the published k6 candidate
+[fixed_pool_refactor-b3fa330f1ebd](https://github.com/system-thoughts/perf-tests/releases/tag/fixed_pool_refactor-b3fa330f1ebd).
+Older releases use different inputs; do not mix their images with these steps.
+The [VM walkthrough](https://gitcode.com/lvying6/dragonfly-install/blob/fixed_pool_refactor/Nydus全热场景benchamrk用户指南/VM入门-整改候选流程.md)
+shows public acquisition, YAML edits, manifest placement and repeated runs.
+Subsequent documentation-only commits do not require rebuilding these images.
 
 The Kubernetes path needs kubectl, usable source/input storage and an existing
 Seed proxy. No Go installation or host preparation binary is required. Source

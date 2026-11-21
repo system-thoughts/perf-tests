@@ -41,13 +41,14 @@ type Result struct {
 }
 
 type Spec struct {
-	Manifest, TargetConfig, Out string
-	Options                     Options
+	Manifest, Out string
+	Config        Config
+	Options       Options
 }
 
 func Prepare(ctx context.Context, s Spec) (result Result, err error) {
-	if s.Manifest == "" || s.TargetConfig == "" || s.Out == "" {
-		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("manifest, target-config and out are required"))
+	if s.Manifest == "" || s.Out == "" {
+		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("manifest and out are required"))
 	}
 	if err := s.Options.validate(); err != nil {
 		return result, contract.Tag(contract.InputInvalid, err)
@@ -56,9 +57,13 @@ func Prepare(ctx context.Context, s Spec) (result Result, err error) {
 	if err != nil {
 		return result, err
 	}
-	c, err := ReadConfig(s.TargetConfig)
+	c := s.Config
+	if err := c.Target.Validate(); err != nil {
+		return result, contract.Tag(contract.InputInvalid, err)
+	}
+	c.Source.BaseURL, err = contract.NormalizeBaseURL(c.Source.BaseURL)
 	if err != nil {
-		return result, err
+		return result, contract.Tag(contract.InputInvalid, fmt.Errorf("source-base-url: %w", err))
 	}
 	if err := contract.PrepareOutput(s.Out, "target-preparation.json", ".target-preparation.json.tmp"); err != nil {
 		return result, err

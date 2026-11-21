@@ -27,7 +27,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -214,10 +213,7 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 			if err := os.WriteFile(manifest, raw, 0600); err != nil {
 				t.Fatal(err)
 			}
-			config := filepath.Join(dir, "target.yaml")
-			if err := os.WriteFile(config, []byte(fmt.Sprintf("schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: %s\n  expected_server_ip: 192.0.2.10\n", proxy.URL)), 0600); err != nil {
-				t.Fatal(err)
-			}
+			config := Config{Source: Source{BaseURL: "http://objects.test"}, Target: Target{Proxy: proxy.URL, ExpectedServerIP: "192.0.2.10"}}
 			out := filepath.Join(dir, "out")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -241,7 +237,7 @@ func TestReadinessRequiresEveryObjectAndActiveContext(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			result, err := Prepare(ctx, Spec{Manifest: manifest, TargetConfig: config, Out: out, Options: Options{Concurrency: 1, RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000}})
+			result, err := Prepare(ctx, Spec{Manifest: manifest, Config: config, Out: out, Options: Options{Concurrency: 1, RequestTimeoutMS: 2000, ReadyTimeoutMS: 2000}})
 			data, readErr := os.ReadFile(record)
 			if mode == "ready" || mode == "unrelated" {
 				if err != nil || readErr != nil || result.Status != StatusReady {
@@ -355,58 +351,29 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
-func TestTargetConfigParsingAndAddresses(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "target.yaml")
-	original := "schema_version: 1\nsource:\n  base_url: http://objects.test\ntarget:\n  proxy: http://seed.test:4001\n  expected_server_ip: 192.0.2.10\n"
+func TestTargetAddresses(t *testing.T) {
 	for _, test := range []struct {
-		name, raw string
+		proxy, ip string
 		valid     bool
 	}{
-		{"valid", original, true},
-		{"valid-alias", strings.ReplaceAll(original, "base_url: http://objects.test", "base_url: &url http://objects.test") + "  ref: *url\n", true},
-		{"invalid-proxy", strings.ReplaceAll(original, "http://seed.test:4001", "abc"), false},
-		{"missing-proxy-host", strings.ReplaceAll(original, "http://seed.test:4001", "http://:4001"), false},
-		{"invalid-server", strings.ReplaceAll(original, "192.0.2.10", "bad"), false},
-		{"unknown", original + "prepare: {}\n", false},
-		{"duplicate", original + "schema_version: 1\n", false},
-		{"second-document", original + "---\n", false},
+		{"http://seed.test:4001", "192.0.2.10", true},
+		{"abc", "192.0.2.10", false},
+		{"http://:4001", "192.0.2.10", false},
+		{"http://seed.test:4001", "bad", false},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			if err := os.WriteFile(path, []byte(test.raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			_, err := ReadConfig(path)
-			if (err == nil) != test.valid {
-				t.Fatalf("%s: %v", test.name, err)
-			}
-			if err != nil && !strings.Contains(err.Error(), path) {
-				t.Fatal("missing config path", err)
-			}
-		})
+		if err := (Target{Proxy: test.proxy, ExpectedServerIP: test.ip}).Validate(); (err == nil) != test.valid {
+			t.Fatalf("%+v: %v", test, err)
+		}
 	}
 	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://source.example:0", "http://source.example:65536"} {
-		t.Run("source-rejected-"+input, func(t *testing.T) {
-			raw := strings.ReplaceAll(original, "http://objects.test", input)
-			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ReadConfig(path); err == nil || !strings.Contains(err.Error(), "source") {
-				t.Fatalf("accepted %q or missing source diagnostic: %v", input, err)
-			}
-		})
+		if _, err := contract.NormalizeBaseURL(input); err == nil {
+			t.Fatalf("accepted %q", input)
+		}
 	}
 	for input, want := range map[string]string{"http://LOCALHOST.": "http://localhost.", "http://x.localhost": "http://x.localhost", "http://127.0.0.1": "http://127.0.0.1", "http://[::1]": "http://[::1]", "http://[::ffff:127.0.0.1]": "http://[::ffff:127.0.0.1]", "http://SOURCE.example:80/base/": "http://source.example/base", "http://source.example": "http://source.example", "http://[2001:db8::1]:8080/": "http://[2001:db8::1]:8080", "http://source.example/base%2Fname//v/": "http://source.example/base%2Fname//v"} {
-		t.Run("source-normalized-"+input, func(t *testing.T) {
-			raw := strings.ReplaceAll(original, "http://objects.test", input)
-			// Quote YAML metacharacters as ordinary users can do.
-			raw = strings.ReplaceAll(raw, "base_url: "+input, "base_url: "+strconv.Quote(input))
-			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-				t.Fatal(err)
-			}
-			c, err := ReadConfig(path)
-			if err != nil || c.Source.BaseURL != want {
-				t.Fatalf("%q: %+v %v; want %s", input, c, err, want)
-			}
-		})
+		got, err := contract.NormalizeBaseURL(input)
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v; want %s", input, got, err, want)
+		}
 	}
 }

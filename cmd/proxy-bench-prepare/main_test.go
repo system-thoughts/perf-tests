@@ -111,7 +111,7 @@ func TestPlanRejectsDatasetArguments(t *testing.T) {
 func TestArgumentFailuresDoNotPrepare(t *testing.T) {
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "missing-manifest.json")
-	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--concurrency", "0"}, {"--manifest", manifest, "--target-config", filepath.Join(dir, "target.yaml"), "--out", filepath.Join(dir, "preparation")}} {
+	for _, args := range [][]string{nil, {"--unknown"}, {"unexpected"}, {"--concurrency", "0"}, {"--manifest", manifest, "--proxy", "http://seed.test:4001", "--source-base-url", "http://source.test", "--expected-server-ip", "192.0.2.10", "--out", filepath.Join(dir, "preparation")}} {
 		var stdout, stderr bytes.Buffer
 		code := run(context.Background(), append([]string{"seed-cache"}, args...), &stdout, &stderr)
 		if code != 2 || stdout.Len() != 0 || stderr.Len() == 0 {
@@ -125,7 +125,7 @@ func TestArgumentFailuresDoNotPrepare(t *testing.T) {
 
 func TestHelpAndCancellationExitPriority(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run(context.Background(), []string{"seed-cache", "--help"}, &stdout, &stderr); code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "target-config") {
+	if code := run(context.Background(), []string{"seed-cache", "--help"}, &stdout, &stderr); code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "source-base-url") {
 		t.Fatalf("help: %d %s %s", code, stdout.String(), stderr.String())
 	}
 	ctx, cancel := context.WithCancel(context.Background())

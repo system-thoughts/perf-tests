@@ -20,18 +20,12 @@ copies have their tools/worker images filled with that build's digests. Reposito
 examples still have image placeholders. The external FileServer is unchanged.
 This development delivery does not change upstream's release process.
 
-Use the published k6 candidate
-[fixed_pool_refactor-b3fa330f1ebd](https://github.com/system-thoughts/perf-tests/releases/tag/fixed_pool_refactor-b3fa330f1ebd).
-Older releases use different inputs; do not mix their images with these steps.
-The [VM walkthrough](https://gitcode.com/lvying6/dragonfly-install/blob/fixed_pool_refactor/Nydus全热场景benchamrk用户指南/VM入门-整改候选流程.md)
-shows public acquisition, YAML edits, manifest placement and repeated runs.
-Subsequent documentation-only commits do not require rebuilding these images.
-
-The Kubernetes path needs kubectl, usable source/input storage and an existing
-Seed proxy. No Go installation or host preparation binary is required. Source
-URLs must be reachable from the Seed; preparation and worker Pods must reach that
-proxy. Reserve capacity and retention for the pool. A ready record describes a
-past successful preparation, not current cache state after eviction or restarts.
+These steps describe the current source interface. Seed preparation now takes
+source/target CLI options; use a matching tools image and deployment bundle.
+The earlier [published candidate](https://github.com/system-thoughts/perf-tests/releases/tag/fixed_pool_refactor-b3fa330f1ebd)
+uses a target configuration file and must follow its versioned instructions.
+The [VM walkthrough](https://gitcode.com/lvying6/dragonfly-install/blob/fixed_pool_refactor/Nydus全热场景benchamrk用户指南/VM复测-20261121-从公开交付件开始.md)
+retains that published candidate's acquisition and practice steps.
 
 ## One Kubernetes path
 
@@ -96,7 +90,7 @@ It does not access the source or Seed. For 0 < R <= B, each object contributes
 floor(B/R) complete regions; leftover bytes are excluded and logged. There are no
 short tail requests. RATE and DURATION are not plan inputs.
 
-Seed preparation reads the manifest and target ConfigMap, not the plan. For each
+Seed preparation reads the manifest and source/target CLI arguments, not the plan. For each
 object it streams a full GET, checks size/SHA and responding identity, then reads
 an immediate small Range from the same task. Bodies are not written by this Pod.
 Only complete success publishes `preparation/target-preparation.json`; no per-object
@@ -118,7 +112,7 @@ kubectl -n benchmark logs job/fixed-pool-worker
 ```
 
 A worker reads four files: manifest, public plan, its own shard and the successful
-preparation. It gets source/target from that record; no target ConfigMap mount is
+preparation. It gets source/target from that record; no separate target configuration is
 needed. Checks reject invalid, damaged or mismatched inputs before starting k6.
 The readable startup context identifies actual paths/SHA, B/N/R/W, target and load.
 
@@ -153,7 +147,7 @@ the total. Input distribution, node placement and overlapping windows belong to
 the operator. Failed workers do not stop or receive compensation from healthy
 workers. Do not average per-worker P99 into a global P99.
 
-Apply ConfigMap edits before creating the Seed Job. Same-name Jobs must be deleted
+Edit Seed Job arguments before creating the Job. Same-name Jobs must be deleted
 and recreated to rerun. Extra deployments use another namespace or consistent
 resource/selector/reference changes; no experiment manager is provided.
 
@@ -166,11 +160,11 @@ proxy-bench-prepare data --root /data/dataset --size 4194304 --count 2
 proxy-bench-prepare plan --manifest /inputs/dataset-manifest.json \
   --range 409600 --workers 1 --out /inputs/plan
 proxy-bench-prepare seed-cache --manifest /inputs/dataset-manifest.json \
-  --target-config /config/target-config.yaml --out /inputs/preparation
+  --source-base-url http://fixed-pool-source --proxy http://seed-client:4001 \
+  --expected-server-ip 192.0.2.10 --out /inputs/preparation
 ```
 
-The [target configuration example](examples/target-config.yaml) is for direct CLI
-use; the Kubernetes path edits seed.yaml's ConfigMap instead.
+The Kubernetes path fills the same source/target values in seed.yaml arguments.
 
 | Parameter | Default or requirement |
 | --- | --- |
@@ -179,7 +173,7 @@ use; the Kubernetes path edits seed.yaml's ConfigMap instead.
 | plan manifest/range/out | Required; 0 < R <= B; output plan/shards must not exist |
 | workers | 1; 1..M, where M=N*floor(B/R) |
 | memory-budget/file-budget | Omitted: no optional budget; explicit positive bytes |
-| seed manifest/target-config/out | Required; new success-record location |
+| seed manifest/source-base-url/proxy/expected-server-ip/out | Required; new success-record location |
 | concurrency | 1; object preparation parallelism |
 | request-timeout-ms/ready-timeout-ms | 1800000/60000; full-request/Range-check budgets |
 | worker RATE | Required total req/s; each assigned rate must be positive |

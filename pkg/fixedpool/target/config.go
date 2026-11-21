@@ -17,18 +17,14 @@
 package target
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dragonflyoss/perf-tests/pkg/fixedpool/contract"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -40,9 +36,9 @@ const (
 )
 
 type Target struct {
-	Ref              string `json:"ref,omitempty" yaml:"ref,omitempty"`
-	Proxy            string `json:"proxy" yaml:"proxy"`
-	ExpectedServerIP string `json:"expected_server_ip" yaml:"expected_server_ip"`
+	Ref              string `json:"ref,omitempty"`
+	Proxy            string `json:"proxy"`
+	ExpectedServerIP string `json:"expected_server_ip"`
 }
 
 type Options struct {
@@ -52,50 +48,12 @@ type Options struct {
 }
 
 type Source struct {
-	BaseURL string `json:"base_url" yaml:"base_url"`
+	BaseURL string `json:"base_url"`
 }
 
 type Config struct {
-	SchemaVersion int    `json:"schema_version" yaml:"schema_version"`
-	Target        Target `json:"target" yaml:"target"`
-	Source        Source `json:"source" yaml:"source"`
-}
-
-// ReadConfig decodes one target configuration and validates its addresses.
-func ReadConfig(name string) (c Config, err error) {
-	defer func() {
-		if err != nil {
-			err = contract.Input("TARGET_CONFIG", name, err)
-		}
-	}()
-	raw, err := os.ReadFile(name)
-	if err != nil {
-		return c, contract.Tag(contract.InputInvalid, err)
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(raw))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&c); err != nil {
-		return c, contract.Tag(contract.ContractMismatch, err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("expected one YAML document"))
-	}
-	if err := validateConfig(c); err != nil {
-		return c, contract.Tag(contract.ContractMismatch, err)
-	}
-	c.Source.BaseURL, err = contract.NormalizeBaseURL(c.Source.BaseURL)
-	if err != nil {
-		return c, contract.Tag(contract.ContractMismatch, fmt.Errorf("source.base_url: %w", err))
-	}
-	return c, nil
-}
-
-func validateConfig(c Config) error {
-	if c.SchemaVersion != 1 {
-		return fmt.Errorf("schema_version: expected 1, actual %d", c.SchemaVersion)
-	}
-	return c.Target.Validate()
+	Target Target
+	Source Source
 }
 
 func (t Target) Validate() error {

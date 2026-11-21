@@ -9,7 +9,7 @@ These are ordinary editable YAML resources, not templates or an orchestrator.
 | data.yaml | Generate the selected dataset on the source volume |
 | file-server.yaml | Serve only generated object bodies with existing Nginx |
 | plan.yaml | Generate a plan from an explicitly provided manifest file |
-| seed.yaml | Shared target ConfigMap and independent Seed-preparation Job |
+| seed.yaml | Independent Seed-preparation Job; source/target values are CLI arguments |
 | worker.yaml | Consume valid inputs and run one worker |
 
 Use kubectl -n for namespace selection; placement is optional. Edit storage, source/target

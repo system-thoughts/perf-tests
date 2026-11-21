@@ -173,7 +173,10 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	var spec target.Spec
 	flags.StringVar(&spec.Manifest, "manifest", "", "required: immutable dataset manifest")
-	flags.StringVar(&spec.TargetConfig, "target-config", "", "required: target YAML with proxy and expected server IP")
+	flags.StringVar(&spec.Config.Source.BaseURL, "source-base-url", "", "required: HTTP source base URL")
+	flags.StringVar(&spec.Config.Target.Proxy, "proxy", "", "required: HTTP proxy origin")
+	flags.StringVar(&spec.Config.Target.ExpectedServerIP, "expected-server-ip", "", "required: actual Seed response IP")
+	flags.StringVar(&spec.Config.Target.Ref, "target-ref", "", "optional: target display label")
 	flags.StringVar(&spec.Out, "out", "", "required: output directory; one writer, existing records are not replaced")
 	command.DecimalFlag(flags, &spec.Options.Concurrency, "concurrency", 1, "optional: concurrent object preparations (default 1)")
 	command.DecimalFlag(flags, &spec.Options.RequestTimeoutMS, "request-timeout-ms", 1800000, "optional: full GET timeout in milliseconds (default 1800000)")
@@ -194,7 +197,7 @@ func runSeed(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	code := command.ExitCode(ctx, err)
 	if err != nil {
-		finish(ctx, stderr, "seed-cache", fmt.Errorf("MANIFEST %q TARGET_CONFIG %q OUT %q: %w", spec.Manifest, spec.TargetConfig, spec.Out, err))
+		finish(ctx, stderr, "seed-cache", fmt.Errorf("MANIFEST %q OUT %q: %w", spec.Manifest, spec.Out, err))
 		_, _ = fmt.Fprintf(stderr, "After correcting the reported problem, rerun proxy-bench-prepare seed-cache with the same manifest/target; reuse a valid success record downstream, or explicitly clean conflicting output items or select another --out. This command does not clear the Seed cache.\n")
 		return code
 	}

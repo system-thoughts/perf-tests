@@ -1,5 +1,5 @@
-# Edit image/node and dataset size/count/source URL. The URL must be reachable from the Seed.
-# cluster.local is an example cluster domain. Use one preparer per location; owned output paths must not exist.
+# Edit image, optional placement and dataset size/count; no source URL is needed here.
+# Use one preparer per location; owned output paths must not exist.
 apiVersion: batch/v1
 kind: Job
 metadata:

@@ -3,6 +3,10 @@
 Load-test the Dragonfly dfdaemon proxy with [k6](https://k6.io). Every request goes through the proxy, the
 response body is discarded as it arrives, and k6 prints latency, throughput and error rate at the end.
 
+For deterministic object pools and reusable Range shards, select `MODE=fixed-pool`
+and follow the [fixed-pool workflow](fixed-pool/README.md). Its preparation inputs
+and load controls differ from the original modes below.
+
 ## Prerequisites
 
 - Dragonfly installed in the cluster, see the [root README](../../README.md).

@@ -12,13 +12,16 @@ These are ordinary editable YAML resources, not templates or an orchestrator.
 | seed.yaml | Shared target ConfigMap and independent Seed-preparation Job |
 | worker.yaml | Consume valid inputs and run one worker |
 
-Edit images, namespace, placement/storage, source URL, target and workload settings.
+Use kubectl -n for namespace selection; placement is optional. Edit storage, source/target
+and workload values. Published candidate bundles fill matching image digests;
+repository examples require replacing image placeholders.
 Provide the manifest at the configured input path using your own file-transfer or
 mounting method. Neither the source workload nor a preparation Job downloads or
 selects it. The two preparation Jobs are independent. Apply resources in the
 workflow's order rather than applying this whole directory and assuming ordering.
 
-Plan/Seed outputs require new or empty locations; Job deletion does not empty a
-PVC. stdout/stderr go to Pod logs, while necessary artifacts remain on their
+Use one preparer per location. Owned outputs must not exist; unrelated files are
+allowed. Job deletion does not remove outputs from a PVC. stdout/stderr go to Pod
+logs, while necessary artifacts remain on their
 volumes. Save logs only when needed. Existing resource names are one-deployment
 examples; additional deployments use operator-selected names or namespaces.

@@ -6,7 +6,7 @@ case "${MODE:-repeat}" in
     exec k6 run /home/k6/proxy-bench.js "$@"
     ;;
   fixed-pool)
-    exec /bin/sh /home/k6/fixed-pool/run-benchmark.sh "$@"
+    exec proxy-bench-worker-support /home/k6/fixed-pool/benchmark.js "$@"
     ;;
   *)
     printf 'MODE: expected repeat, random, sequential or fixed-pool; actual %s\n' "$MODE" >&2

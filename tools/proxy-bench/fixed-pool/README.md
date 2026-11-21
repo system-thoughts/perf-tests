@@ -115,6 +115,9 @@ A worker reads four files: manifest, public plan, its own shard and the successf
 preparation. It gets source/target from that record; no separate target configuration is
 needed. Checks reject invalid, damaged or mismatched inputs before starting k6.
 The readable startup context identifies actual paths/SHA, B/N/R/W, target and load.
+The Go worker entry checks inputs, passes its small in-memory configuration to k6
+through `WORKER_SPEC`, forwards termination and waits for k6. No temporary worker
+configuration or proxy handoff file is created.
 
 The shared proxy-bench report displays native request rate, failure rate, latency,
 throughput and plan consumption. `PROXY_BENCH_FIXED_POOL_K6_SUMMARY_V1` preserves

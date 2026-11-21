@@ -19,7 +19,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -106,25 +105,13 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	env.Manifest = manifestPath
 	env.Plan = planPath
 	env.Preparation = prepPath
-	output := filepath.Join(dir, "worker-input.json")
 	var logs bytes.Buffer
-	if err := PrepareInput(ctx, env, output, &logs); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(output)
+	spec, err := PrepareInput(ctx, env, &logs)
 	if err != nil {
-		t.Fatal(err)
-	}
-	var spec Spec
-	if err := json.Unmarshal(raw, &spec); err != nil {
 		t.Fatal(err)
 	}
 	if spec.BaseURL != "http://origin.test" || spec.Manifest != manifestPath || spec.ManifestID != manifestID || spec.Proxy != prepared.Proxy || spec.Rate != 50 || spec.RegionCount != 4 || spec.WorkerID != 0 || spec.PlanID != contract.Digest(planRaw) {
 		t.Fatalf("%+v", spec)
-	}
-	proxy, err := os.ReadFile(filepath.Join(dir, "proxy"))
-	if err != nil || string(proxy) != prepared.Proxy+"\n" {
-		t.Fatalf("proxy=%q err=%v", proxy, err)
 	}
 	if strings.Contains(logs.String(), Prefix) || strings.Count(logs.String(), "fixed-pool inputs checked") != 1 || !strings.Contains(logs.String(), "local_rate=50") {
 		t.Fatal(logs.String())
@@ -132,8 +119,8 @@ func TestPreparedInputsAreBoundAndLocalShardOnly(t *testing.T) {
 	if !strings.Contains(logs.String(), "B=64 N=2") || !strings.Contains(logs.String(), "R=16 W=2") {
 		t.Fatal(logs.String())
 	}
-	if err := PrepareInput(ctx, env, filepath.Join(dir, "missing/input.json"), io.Discard); err == nil {
-		t.Fatal("ignored output failure")
+	if _, err := PrepareInput(ctx, env, brokenWriter{}); err == nil {
+		t.Fatal("ignored startup log failure")
 	}
 }
 
@@ -172,3 +159,7 @@ func TestPreparationBindings(t *testing.T) {
 		})
 	}
 }
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }

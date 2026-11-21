@@ -105,24 +105,24 @@ func ReadEnvironment(environ []string) (e Environment, err error) {
 	return e, err
 }
 
-func PrepareInput(ctx context.Context, e Environment, output string, stdout io.Writer) error {
+func PrepareInput(ctx context.Context, e Environment, stdout io.Writer) (Spec, error) {
 	started := time.Now()
 	m, manifestRaw, err := contract.ReadManifest(e.Manifest)
 	if err != nil {
-		return err
+		return Spec{}, err
 	}
 	manifestID := contract.Digest(manifestRaw)
 	p, planRaw, err := plan.LoadWorker(ctx, e.Plan, m, manifestID, e.WorkerID)
 	if err != nil {
-		return contract.Tag(contract.ContractMismatch, err)
+		return Spec{}, contract.Tag(contract.ContractMismatch, err)
 	}
 	prepRaw, err := os.ReadFile(e.Preparation)
 	if err != nil {
-		return contract.Tag(contract.InputInvalid, contract.Input("TARGET_PREPARATION", e.Preparation, err))
+		return Spec{}, contract.Tag(contract.InputInvalid, contract.Input("TARGET_PREPARATION", e.Preparation, err))
 	}
 	prepared, err := CheckPreparation(prepRaw, manifestID)
 	if err != nil {
-		return contract.Tag(contract.ContractMismatch, contract.Input("TARGET_PREPARATION", e.Preparation, err))
+		return Spec{}, contract.Tag(contract.ContractMismatch, contract.Input("TARGET_PREPARATION", e.Preparation, err))
 	}
 	counts := make([]uint64, p.WorkerCount)
 	for i, s := range p.Shards {
@@ -130,7 +130,7 @@ func PrepareInput(ctx context.Context, e Environment, output string, stdout io.W
 	}
 	rates, err := plan.AllocateRates(counts, e.Rate)
 	if err != nil {
-		return contract.Tag(contract.InputInvalid, err)
+		return Spec{}, contract.Tag(contract.InputInvalid, err)
 	}
 	headers := map[string]string{}
 	for key, value := range target.FixedHeaders() {
@@ -138,30 +138,18 @@ func PrepareInput(ctx context.Context, e Environment, output string, stdout io.W
 	}
 	manifestPath, err := filepath.Abs(e.Manifest)
 	if err != nil {
-		return err
+		return Spec{}, err
 	}
 	shardPath, err := filepath.Abs(filepath.Join(filepath.Dir(e.Plan), p.Shards[e.WorkerID].Path))
 	if err != nil {
-		return err
+		return Spec{}, err
 	}
 	spec := Spec{BaseURL: prepared.Source.BaseURL, RunID: e.RunID, WorkerID: e.WorkerID, PlanID: contract.Digest(planRaw), ManifestID: manifestID, Manifest: manifestPath, Shard: shardPath, RegionCount: counts[e.WorkerID], RangeBytes: p.RangeBytes, RegionsPerObject: p.RegionsPerObject, Proxy: prepared.Target.Proxy, Headers: headers, Rate: rates[e.WorkerID], DurationMS: e.Duration.Milliseconds(), TimeoutMS: e.Timeout.Milliseconds(), GracefulStopMS: e.GracefulStop.Milliseconds(), PreAllocatedVUs: e.PreAllocatedVUs, MaxVUs: e.MaxVUs}
-	// This file is private to one invocation. It is consumed only after the
-	// helper succeeds; it is neither a published result nor a reusable input.
-	raw, err := contract.Encode(spec)
-	if err != nil {
-		return err
-	}
-	if err = os.WriteFile(output, raw, 0600); err != nil {
-		return err
-	}
-	if err = os.WriteFile(filepath.Join(filepath.Dir(output), "proxy"), []byte(prepared.Target.Proxy+"\n"), 0600); err != nil {
-		return err
-	}
 	_, err = fmt.Fprintf(stdout, "fixed-pool inputs checked (%d ms)\n  Dataset: path=%q sha256=%s B=%d N=%d source=%q\n  Plan: path=%q sha256=%s R=%d W=%d regions=%d\n  Preparation: path=%q sha256=%s (recorded ready; current cache state is not rechecked)\n  Target: proxy=%q expected_server_ip=%s\n  Worker: id=%d shard=%q sha256=%s regions=%d\n  Load: total_rate=%d local_rate=%d duration=%s timeout=%s graceful_stop=%s pre_allocated_vus=%d max_vus=%d\n", time.Since(started).Milliseconds(), manifestPath, manifestID, m.ObjectSize, m.ObjectCount, prepared.Source.BaseURL, e.Plan, spec.PlanID, p.RangeBytes, p.WorkerCount, p.RegionCount, e.Preparation, contract.Digest(prepRaw), prepared.Target.Proxy, prepared.Target.ExpectedServerIP, e.WorkerID, shardPath, p.Shards[e.WorkerID].SHA256, spec.RegionCount, e.Rate, spec.Rate, e.Duration, e.Timeout, e.GracefulStop, e.PreAllocatedVUs, e.MaxVUs)
 	if err == nil && e.RunID != "" {
 		_, err = fmt.Fprintf(stdout, "  Run ID: %s\n", e.RunID)
 	}
-	return err
+	return spec, err
 }
 
 func Emit(w io.Writer, kind string, value any) error {
